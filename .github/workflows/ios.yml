@@ -1,0 +1,35 @@
+name: iOS
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build
+        run: |
+          xcodebuild build \
+            -project ios/OpenFlight.xcodeproj \
+            -scheme OpenFlight \
+            -destination "generic/platform=iOS Simulator" \
+            CODE_SIGNING_ALLOWED=NO
+      - name: Select an iPhone simulator
+        run: |
+          DEVICE_ID="$(xcrun simctl list devices available |
+            sed -nE 's/.*iPhone.*\(([0-9A-F-]{36})\).*/\1/p' |
+            head -1)"
+          test -n "$DEVICE_ID"
+          echo "DEVICE_ID=$DEVICE_ID" >> "$GITHUB_ENV"
+      - name: Test
+        run: |
+          xcodebuild test \
+            -project ios/OpenFlight.xcodeproj \
+            -scheme OpenFlight \
+            -destination "id=$DEVICE_ID" \
+            CODE_SIGNING_ALLOWED=NO

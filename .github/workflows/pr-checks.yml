@@ -101,11 +101,14 @@ jobs:
             const isTest = (f) =>
               /^tests\//.test(f) ||
               /^ui\/tests\//.test(f) ||
+              /^ios\/OpenFlightTests\//.test(f) ||
               /\.(test|spec)\.[jt]sx?$/.test(f);
 
             const isSource = (f) =>
               !isTest(f) &&
-              (/^src\/openflight\/.*\.py$/.test(f) || /^ui\/src\//.test(f));
+              (/^src\/openflight\/.*\.py$/.test(f) ||
+                /^ui\/src\//.test(f) ||
+                /^ios\/OpenFlight\/.*\.swift$/.test(f));
 
             const changed = files
               .filter((f) => f.status !== "removed")
@@ -116,7 +119,7 @@ jobs:
 
             if (sourceChanged && !testChanged) {
               core.setFailed(
-                "This PR changes source code under src/openflight/ or ui/src/ " +
+                "This PR changes backend, web, or iOS source code " +
                   "but does not add or update any tests.\n\n" +
                   "Every PR must include tests. If tests genuinely don't apply " +
                   '(e.g. docs or config only), add the "no-tests-needed" label ' +

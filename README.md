@@ -105,6 +105,9 @@ scripts/start-kiosk.sh --kld7-geometry
 
 # Development mode (no hardware)
 scripts/start-kiosk.sh --mock
+
+# Also advertise completed shots to the OpenFlight iOS app over Bluetooth
+scripts/start-kiosk.sh --ble
 ```
 
 The IWR6843 geometry flags are **not optional** — a wrong value silently biases
@@ -112,6 +115,11 @@ the launch angle rather than failing. `--iwr6843-ball-height-m` is 0.021 off a
 mat and 0.040 off a tee, which is about 0.8° of launch angle.
 
 Then open http://localhost:8080 or use the touchscreen.
+
+To show completed shots on an iPhone without putting either device on a Wi-Fi
+network, build the small SwiftUI app in `ios/` and start the Pi with `--ble`.
+See the **[iOS Bluetooth Guide](docs/ios-ble.md)** for setup, protocol details,
+and troubleshooting.
 
 ### 5. Sync to the cloud (optional)
 
@@ -150,20 +158,21 @@ This is browser/tab casting only. OpenFlight does not include native Cast SDK su
 ┌─────────────┐  USB/Serial  ┌─────────────┐  Callback   ┌─────────────┐  WebSocket  ┌─────────────┐
 │  OPS243-A   │ ───────────▶ │   Rolling   │ ──────────▶ │   Flask     │ ──────────▶ │   React     │
 │   Radar     │  I/Q buffer  │   Buffer    │  on_shot()  │   Server    │   "shot"    │     UI      │
-└─────────────┘              │   Monitor   │             └─────────────┘             └─────────────┘
-                             └─────────────┘
-                                                               ▲
-┌─────────────┐  USB/Serial                                    │
-│ K-LD7 (×2)  │ ──────────────────── angle data ──────────────┘
-│ Angle Radar │
-└─────────────┘
+└─────────────┘              │   Monitor   │             └──────┬──────┘             └─────────────┘
+                             └─────────────┘                    │
+                                                               │ optional BLE
+┌─────────────┐  USB/Serial                                    ▼
+│ K-LD7 (×2)  │ ──────────────────── angle data ────────▶ ┌─────────────┐
+│ Angle Radar │                                           │  iOS app    │
+└─────────────┘                                           └─────────────┘
 ```
 
 1. **Sound trigger fires** — SEN-14262 detects club impact, triggers OPS243-A HOST_INT
 2. **OPS243-A dumps buffer** — Rolling buffer I/Q data is captured and analyzed for ball speed, club speed, and spin
 3. **K-LD7 correlates** — The server uses the OPS243-A impact timestamp to find the matching ball burst in the K-LD7 ring buffer, extracting launch angle and club path
 4. **Carry computed** — Ball speed + spin + launch angle → carry distance
-5. **UI updates** — Shot data emitted via WebSocket to the React frontend
+5. **UIs update** — Shot data is emitted to the React frontend and, when
+   enabled, sent as a BLE notification to the iOS app
 
 ### Doppler Radar Basics
 

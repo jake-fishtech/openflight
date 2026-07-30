@@ -111,6 +111,9 @@ sim_connectors: List = []
 # ShotNumber field and every shot comes back 501 "Bad format".
 sim_player_state = SimPlayerState(shot_counter=initial_shot_counter())
 
+# Optional Bluetooth Low Energy publisher for the iOS app.
+ble_publisher = None
+
 _DEFAULT_KLD7_RADC_TUNING = {
     "radc_speed_tolerance_mph": 10.0,
     "radc_centroid_floor_frac": 0.5,
@@ -164,6 +167,8 @@ def _cleanup_hardware_for_shutdown() -> None:
         _run_shutdown_step("K-LD7 horizontal stop", kld7_horizontal.stop)
     if iwr6843_runtime:
         _run_shutdown_step("IWR6843 stop", iwr6843_runtime.stop)
+    if ble_publisher:
+        _run_shutdown_step("BLE publisher stop", ble_publisher.stop)
 
     _run_shutdown_step("camera thread stop", stop_camera_thread)
     if camera:
@@ -2467,6 +2472,7 @@ def on_shot_detected(shot: Shot):
         )
 
     # Emit shot with launch angle data included
+    shot_data = None
     try:
         shot_data = shot_to_dict(shot)
         stats = monitor.get_session_stats() if monitor else {}
@@ -2490,7 +2496,13 @@ def on_shot_detected(shot: Shot):
             context={"stage": "emit_shot", "ball_speed_mph": shot.ball_speed_mph},
             exc=e,
         )
-        return
+
+    # Bluetooth transport is deliberately independent of WebSocket delivery.
+    if shot_data is not None and ble_publisher is not None:
+        try:
+            ble_publisher.publish(shot_data)
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.warning("[SERVER] Failed to queue BLE shot: %s", e, exc_info=True)
 
     # Forward to simulator connectors (optional)
     _forward_shot_to_simulators(shot)
@@ -2959,6 +2971,11 @@ def main():
         action="store_true",
         help="Enable simulator connectors from config/sim.json (GSPro / OpenGolfSim). "
         "Off by default.",
+    )
+    parser.add_argument(
+        "--ble",
+        action="store_true",
+        help="Advertise completed shots over Bluetooth LE for the OpenFlight iOS app",
     )
     parser.add_argument(
         "--ballistics",
@@ -3460,6 +3477,14 @@ def main():
         sample_rate_ksps=args.sample_rate,
         ops_baud=args.ops_baud,
     )
+
+    global ble_publisher  # pylint: disable=global-statement
+    if args.ble:
+        from .ble import BleShotPublisher  # pylint: disable=import-outside-toplevel
+
+        ble_publisher = BleShotPublisher()
+        ble_publisher.start()
+        print("Bluetooth LE enabled (advertising as OpenFlight)")
 
     # Simulator connectors (off unless --sim). Started after the monitor exists
     # so inbound club updates can call monitor.set_club().

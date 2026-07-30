@@ -161,9 +161,9 @@ log "Activated virtual environment"
 # Install Python dependencies
 log "Installing Python dependencies..."
 if command -v uv &> /dev/null; then
-    uv pip install -e ".[ui,analysis]"
+    uv pip install -e ".[ui,analysis,ble]"
 else
-    pip install -e ".[ui,analysis]"
+    pip install -e ".[ui,analysis,ble]"
 fi
 # Camera dependencies are disabled for the radar-only production path.
 # If camera support returns, re-enable the optional camera extra in

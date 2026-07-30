@@ -45,3 +45,13 @@ def test_camera_extra_is_disabled_until_camera_support_returns():
     camera_dependencies = _pyproject()["project"]["optional-dependencies"]["camera"]
 
     assert camera_dependencies == []
+
+
+def test_ble_dependency_is_optional():
+    """Non-Pi contributors should not need BlueZ dependencies unless BLE is enabled."""
+    metadata = _pyproject()
+    dependencies = metadata["project"]["dependencies"]
+    ble_dependencies = metadata["project"]["optional-dependencies"]["ble"]
+
+    assert not any(_requirement_name(dep) == "bless" for dep in dependencies)
+    assert any(_requirement_name(dep) == "bless" for dep in ble_dependencies)

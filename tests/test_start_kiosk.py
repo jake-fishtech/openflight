@@ -30,6 +30,13 @@ def test_iwr6843_enables_ti_launch_pipeline_with_production_defaults():
     assert "--kld7" not in command
 
 
+def test_ble_flag_is_forwarded_to_server():
+    command = _dry_run("--mock", "--ble").stdout.strip()
+
+    assert "--mock" in command
+    assert "--ble" in command
+
+
 def test_iwr6843_overrides_are_forwarded():
     result = _dry_run(
         "--iwr6843",

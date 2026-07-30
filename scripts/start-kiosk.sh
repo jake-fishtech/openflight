@@ -61,6 +61,7 @@ EXPERIMENTAL_KLD7_HORIZONTAL_ANGLE_LIMIT=""
 BALLISTICS=false
 SIM=false
 CALCULATED_SPIN=false
+BLE=false
 
 # Buffer split presets (pre/post trigger segments out of 32 total)
 # At 20ksps: each segment = 6.4ms, total buffer = 204.8ms
@@ -285,6 +286,10 @@ while [[ $# -gt 0 ]]; do
             CALCULATED_SPIN=true
             shift
             ;;
+        --ble)
+            BLE=true
+            shift
+            ;;
         --radar-port|--ops-port)
             RADAR_PORT="$2"
             shift 2
@@ -438,6 +443,10 @@ if [ "$CALCULATED_SPIN" = true ]; then
     SERVER_CMD="$SERVER_CMD --calculated-spin"
 fi
 
+if [ "$BLE" = true ]; then
+    SERVER_CMD="$SERVER_CMD --ble"
+fi
+
 if [ -n "$TRIGGER" ]; then
     SERVER_CMD="$SERVER_CMD --trigger $TRIGGER"
 fi
@@ -556,7 +565,11 @@ if ! command -v uv >/dev/null 2>&1; then
     error "uv not found. Install it: https://docs.astral.sh/uv/"
     exit 1
 fi
-uv sync --quiet
+if [ "$BLE" = true ]; then
+    uv sync --quiet --extra ble
+else
+    uv sync --quiet
+fi
 
 configure_kld7_latency
 
@@ -606,6 +619,10 @@ fi
 
 if [ "$DEBUG_MODE" = true ]; then
     log "Debug mode enabled (verbose output)"
+fi
+
+if [ "$BLE" = true ]; then
+    log "Bluetooth LE shot notifications enabled"
 fi
 
 if [ "$TRACKMAN_TEST" = true ]; then
