@@ -128,22 +128,44 @@ journalctl -u bluetooth -n 20 --no-pager
 ```
 
 `Failed to add advertisement: Invalid Parameters (0x0d)` means the kernel
-refused the advertising parameters. Bless 0.3.0 always publishes `TxPower`,
-`MinInterval`, and `MaxInterval`, which BlueZ turns into `MGMT_ADV_PARAM_*`
-flags that controllers without LE Extended Advertising — including the
-Raspberry Pi's — reject. OpenFlight hides those three properties before
-starting the GATT server. To confirm what this adapter accepts, register the
-advertisement one property group at a time:
+refused the advertisement. Register the advertisement one property group at a
+time to find out which part it objects to:
 
 ```bash
 uv run python scripts/hardware-test/test_ble_advertise.py
 ```
 
-If the probe fails on `service UUID + LocalName`, the 128-bit service UUID and
-the advertised name do not both fit in the 31-byte legacy advertisement. The
-advertised name is the `BleShotPublisher(name=...)` default in `server.py`;
-shorten it there. The iOS app scans by service UUID, so the name only affects
-what other Bluetooth tools display.
+The probe prints which layer is implicated. For the parameter-level detail,
+capture the management interface while it runs:
+
+```bash
+sudo btmon -w /tmp/ble-adv.btsnoop
+```
+
+### Known bad: Raspberry Pi kernel 6.18.34+rpt-rpi-2712
+
+On this kernel every advertisement is rejected, including one carrying no data
+at all. `Add Extended Advertising Parameters (0x0054)` succeeds and reports 31
+bytes available for both advertising and scan response data, and then `Add
+Extended Advertising Data (0x0055)` fails with `Invalid Parameters (0x0d)` for
+a zero-byte payload:
+
+```text
+@ MGMT Event: Command Complete   Add Extended Advertising Parameters (0x0054)
+        Status: Success (0x00)
+        Available adv data len: 31
+        Available scan rsp data len: 31
+@ MGMT Command:                  Add Extended Advertising Data (0x0055)
+        Advertising data length: 0
+        Scan response length: 0
+@ MGMT Event: Command Status     Add Extended Advertising Data (0x0055)
+        Status: Invalid Parameters (0x0d)
+```
+
+Nothing in userspace can shrink a zero-byte payload, so no OpenFlight or Bless
+setting works around this. Boot a kernel without the regression (6.12.x is
+reported to work) and rerun the probe. Until then the iPhone can reach the
+normal browser UI over Wi-Fi.
 
 **The Pi logs that Bluetooth is unavailable.**
 

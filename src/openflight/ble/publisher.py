@@ -11,31 +11,6 @@ from .protocol import SERVICE_UUID, SHOT_CHARACTERISTIC_UUID, encode_shot_event,
 
 logger = logging.getLogger(__name__)
 
-# Bless 0.3.0 always exports these org.bluez.LEAdvertisement1 properties. BlueZ
-# parses them into MGMT_ADV_PARAM_* flags, and controllers without LE Extended
-# Advertising (including the Raspberry Pi's) make the kernel reject the whole
-# registration with "Failed to add advertisement: Invalid Parameters (0x0d)".
-# None of them are needed to advertise the shot service.
-UNSUPPORTED_ADVERTISEMENT_PROPERTIES = ("TxPower", "MinInterval", "MaxInterval")
-
-
-def disable_unsupported_advertisement_properties(advertisement_cls) -> tuple[str, ...]:
-    """Hide advertising parameters the Pi's Bluetooth controller cannot accept.
-
-    ``dbus_next`` omits properties marked ``disabled`` from both ``GetAll`` and
-    introspection, so BlueZ never sees them and never sets the flags the kernel
-    rejects. Returns the sorted names that were disabled; properties absent from
-    a future Bless release are skipped rather than treated as an error.
-    """
-    disabled = []
-    for name in UNSUPPORTED_ADVERTISEMENT_PROPERTIES:
-        prop = getattr(advertisement_cls, name, None)
-        if prop is None or not hasattr(prop, "disabled"):
-            continue
-        prop.disabled = True
-        disabled.append(name)
-    return tuple(sorted(disabled))
-
 
 class BleShotPublisher:
     """Publish completed shots without coupling the radar thread to Bluetooth."""
@@ -136,15 +111,6 @@ class BleShotPublisher:
             GATTAttributePermissions,
             GATTCharacteristicProperties,
         )
-        from bless.backends.bluezdbus.dbus.advertisement import (  # pylint: disable=import-error,import-outside-toplevel
-            BlueZLEAdvertisement,
-        )
-
-        disabled = disable_unsupported_advertisement_properties(BlueZLEAdvertisement)
-        if disabled:
-            logger.debug(
-                "[BLE] Suppressed unsupported advertising properties: %s", ", ".join(disabled)
-            )
 
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=self.queue_size)
