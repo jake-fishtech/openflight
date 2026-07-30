@@ -77,9 +77,15 @@ class ProbeAdvertisement(ServiceInterface):
         return 100
 
 
+OPTIONAL_PROPERTIES = ("ServiceUUIDs", "LocalName", "TxPower", "MinInterval", "MaxInterval")
+
 # Each variant lists the properties hidden from BlueZ. Later variants add back
-# what earlier ones withheld, so the first failure names the culprit.
+# what earlier ones withheld, so the first failure names the culprit. The first
+# variant carries no advertising data at all, which separates "this controller
+# rejects everything" from "this payload is too large" from "this property is
+# unsupported".
 VARIANTS = (
+    ("no advertising data", OPTIONAL_PROPERTIES),
     ("service UUID only", ("LocalName", "TxPower", "MinInterval", "MaxInterval")),
     ("service UUID + LocalName", ("TxPower", "MinInterval", "MaxInterval")),
     ("service UUID + LocalName + TxPower", ("MinInterval", "MaxInterval")),
@@ -88,12 +94,14 @@ VARIANTS = (
 
 
 def _apply_variant(hidden: tuple[str, ...]) -> None:
-    for name in ("LocalName", "TxPower", "MinInterval", "MaxInterval"):
+    for name in OPTIONAL_PROPERTIES:
         getattr(ProbeAdvertisement, name).disabled = name in hidden
 
 
 def _estimate_ad_length(hidden: tuple[str, ...]) -> int:
-    length = AD_ELEMENT_OVERHEAD + 16  # complete list of 128-bit service UUIDs
+    length = 0
+    if "ServiceUUIDs" not in hidden:
+        length += AD_ELEMENT_OVERHEAD + 16  # complete list of 128-bit service UUIDs
     if "LocalName" not in hidden:
         length += AD_ELEMENT_OVERHEAD + len(LOCAL_NAME)
     return length
@@ -158,15 +166,25 @@ async def main() -> int:
         if all(ok for _, ok in results):
             print("All variants accepted. Bless should advertise as-is on this Pi.")
             return 0
-        if not results[0][1]:
-            print("Even a bare service UUID was rejected: this is an adapter or")
-            print("BlueZ problem, not an OpenFlight advertising-property problem.")
-            return 1
 
         first_failure = next(label for label, ok in results if not ok)
         print(f"First rejected variant: {first_failure}")
-        print("OpenFlight hides TxPower/MinInterval/MaxInterval for this reason;")
-        print("if 'service UUID + LocalName' failed, the advertised name must shrink.")
+        if first_failure == "no advertising data":
+            print("An advertisement carrying no data was rejected, so neither the")
+            print("payload size nor any single property is the cause. Suspect the")
+            print("adapter, BlueZ, or the kernel's advertising path itself.")
+        elif first_failure == "service UUID only":
+            print("18 bytes of advertising data were rejected while an empty")
+            print("advertisement was accepted, which points at data-length")
+            print("validation rather than at an unsupported property.")
+        elif first_failure == "service UUID + LocalName":
+            print("The service UUID and the name do not both fit; shorten the name")
+            print("passed to BleShotPublisher in server.py.")
+        else:
+            print("An advertising parameter this controller cannot honor is the")
+            print("cause. OpenFlight already hides TxPower/MinInterval/MaxInterval.")
+        print("\nCompare against bluetoothd's own reason:")
+        print("  journalctl -u bluetooth -n 20 --no-pager")
         return 1
     finally:
         bus.disconnect()
