@@ -1,13 +1,21 @@
-# iOS Bluetooth connection
+# iOS app connection
 
-OpenFlight can send each completed shot directly from a Raspberry Pi to the
-included SwiftUI app over Bluetooth Low Energy (BLE). The connection is local,
-does not require Wi-Fi or a cloud account, and is disabled unless you pass
-`--ble`.
+OpenFlight sends each completed shot from a Raspberry Pi to the included SwiftUI
+app over one of two local transports, chosen with the picker at the top of the
+app. Both carry the identical versioned payload described below, so the app
+behaves the same either way.
+
+| Transport | Pi setup | Use it when |
+|---|---|---|
+| **Bluetooth** | start with `--ble` | No Wi-Fi at all, or the phone is not on the Pi's network |
+| **Wi-Fi** | always on | The phone and Pi share a network, or Bluetooth advertising is unavailable |
+
+Wi-Fi needs no flag: it streams from the same HTTP server that serves the
+browser UI, and exposes nothing the browser UI does not already broadcast.
 
 ## Requirements
 
-- Raspberry Pi with working Bluetooth and Raspberry Pi OS
+- Raspberry Pi running Raspberry Pi OS (working Bluetooth only for the BLE transport)
 - iPhone running iOS 17 or newer
 - Mac with Xcode 16 or newer to build the app
 - The normal OpenFlight radar setup
@@ -35,6 +43,37 @@ scripts/start-kiosk.sh --ble
 BLE startup and delivery errors are isolated from shot recording. If Bluetooth
 is unavailable, the browser UI and session logger continue to work.
 
+## Wi-Fi transport
+
+The server streams shots as [Server-Sent Events](https://developer.mozilla.org/docs/Web/API/Server-sent_events)
+at `/api/shots/stream`. Check it from any machine on the network before
+involving a phone:
+
+```bash
+curl -N http://raspberrypi.local:8080/api/shots/stream
+```
+
+A connection opens with a `: ping` comment, replays the most recent shot if
+there is one, then emits one `event: shot` message per shot with a heartbeat
+every 15 seconds while idle:
+
+```text
+: ping
+
+event: shot
+data: {"ball_speed_mph":151.4,"club":"driver",...,"schema_version":1}
+```
+
+In the app, pick **Wi-Fi** and enter the Pi's address. `raspberrypi.local:8080`
+is the default and works on a stock Raspberry Pi OS install, which publishes its
+hostname over mDNS; if you renamed the Pi, use `<hostname>.local:8080` or its IP.
+The port defaults to 8080 when you leave it off. The app reconnects on its own
+with backoff, and iOS asks once for permission to talk to devices on the local
+network.
+
+The server accepts up to eight simultaneous stream clients and answers `503`
+beyond that, so a forgotten `curl` cannot crowd out a phone.
+
 ## Build and run the iOS app
 
 1. Open `ios/OpenFlight.xcodeproj` in Xcode.
@@ -42,12 +81,14 @@ is unavailable, the browser UI and session logger continue to work.
    unique bundle identifier if Xcode requests one.
 3. Connect an iPhone, select it as the run destination, and press Run.
 4. Accept the Bluetooth permission prompt.
-5. Start OpenFlight on the Pi with `--ble`.
+5. Start OpenFlight on the Pi, adding `--ble` if you want the Bluetooth
+   transport.
 
-The app scans only for the OpenFlight service, connects automatically, and
-subscribes to shot notifications. Hit a shot and its metrics should replace
-the empty dashboard. The most recent shot is replayed when a phone subscribes,
-so a newly connected phone does not have to wait for another shot.
+Over Bluetooth the app scans only for the OpenFlight service, connects
+automatically, and subscribes to shot notifications. Over Wi-Fi it opens the
+shot stream and keeps it open. Either way, hit a shot and its metrics should
+replace the empty dashboard. The most recent shot is replayed when a phone
+connects, so a newly connected phone does not have to wait for another shot.
 
 > The iOS Simulator can run the automated tests, but CoreBluetooth does not
 > provide a useful end-to-end BLE hardware test there. Use a physical iPhone
@@ -55,7 +96,10 @@ so a newly connected phone does not have to wait for another shot.
 
 ## Wire protocol
 
-OpenFlight advertises one service and one notify-only characteristic:
+Both transports carry the same JSON event. Only the framing differs: Wi-Fi sends
+it whole in one SSE `data:` line, while BLE splits it across notifications.
+
+Over BLE, OpenFlight advertises one service and one notify-only characteristic:
 
 | Attribute | UUID |
 |---|---|
@@ -73,7 +117,7 @@ launch_angle_vertical, launch_angle_horizontal, spin_rpm,
 club_path_deg, spin_axis_deg
 ```
 
-The JSON is split into conservative 20-byte notifications. Every notification
+Over BLE the JSON is split into conservative 20-byte notifications. Every notification
 has a five-byte, big-endian header followed by up to 15 payload bytes:
 
 | Byte(s) | Meaning |
@@ -92,24 +136,41 @@ that file.
 
 ## Delivery behavior
 
-- Shot processing never waits for Bluetooth.
-- The Pi keeps a bounded queue of eight unsent events and drops the oldest
-  queued event if a connected phone cannot keep up.
-- Disconnecting clears queued notifications but retains the latest completed
-  shot for replay on the next subscription.
+- Shot processing never waits for either transport, and a failure in one cannot
+  affect the other, the browser UI, or session logging.
+- Each connected client gets a bounded queue of eight unsent events; the oldest
+  queued event is dropped if that client cannot keep up. One stalled phone
+  cannot slow down another.
+- Disconnecting clears that client's queue but retains the latest completed shot
+  for replay on the next connection.
 - The iOS app ignores a replayed event when its `event_id` is already visible.
 
 ## Security and scope
 
 Version one intentionally has no pairing, application authentication, or
-encryption layer. Enable it only where nearby Bluetooth devices receiving shot
-metrics is acceptable. The service sends shot results only; it does not expose
-raw radar captures, session history, settings, or control commands.
+encryption layer, on either transport. Enable BLE only where nearby Bluetooth
+devices receiving shot metrics is acceptable, and treat the Wi-Fi stream as
+readable by anything on the same network — the same assumption the browser UI
+already makes. Both send shot results only; neither exposes raw radar captures,
+session history, settings, or control commands.
 
 If the protocol later carries personal data or allows control of the Pi, add
 authenticated pairing before extending the existing characteristic.
 
 ## Troubleshooting
+
+**The Wi-Fi transport will not connect.**
+
+- Confirm the address with `curl -N http://<host>:8080/api/shots/stream` from a
+  computer on the same network. If curl works and the app does not, the problem
+  is on the phone, not the Pi.
+- If `<hostname>.local` does not resolve, try the Pi's IP address; some networks
+  block mDNS.
+- Accept the iOS local network permission prompt. Deny it once and the app
+  cannot reach the Pi until you re-enable it in Settings, Privacy & Security,
+  Local Network.
+- Keep the phone on the same network as the Pi; this transport does not traverse
+  routers or VPNs.
 
 **The app stays on “Looking for OpenFlight.”**
 
@@ -164,8 +225,8 @@ a zero-byte payload:
 
 Nothing in userspace can shrink a zero-byte payload, so no OpenFlight or Bless
 setting works around this. Boot a kernel without the regression (6.12.x is
-reported to work) and rerun the probe. Until then the iPhone can reach the
-normal browser UI over Wi-Fi.
+reported to work) and rerun the probe. Until then, use the Wi-Fi transport
+above: it needs no Bluetooth and delivers the identical payload.
 
 **The Pi logs that Bluetooth is unavailable.**
 
@@ -184,7 +245,7 @@ normal browser UI over Wi-Fi.
 ## Automated tests
 
 ```bash
-uv run pytest tests/test_ble_protocol.py tests/test_ble_publisher.py -v
+uv run pytest tests/test_ble_protocol.py tests/test_ble_publisher.py tests/test_shot_stream.py -v
 
 xcodebuild test \
   -project ios/OpenFlight.xcodeproj \

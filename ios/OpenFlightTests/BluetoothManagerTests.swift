@@ -57,13 +57,6 @@ final class BluetoothManagerTests: XCTestCase {
 
         XCTAssertEqual(manager.latestShot?.ballSpeedMPH, 151.4)
     }
-
-    private func sharedShotFixture() throws -> Data {
-        let fixtureURL = try XCTUnwrap(
-            Bundle(for: Self.self).url(forResource: "shot_v1", withExtension: "json")
-        )
-        return try Data(contentsOf: fixtureURL)
-    }
 }
 
 private final class FakeCentral: CentralManaging {

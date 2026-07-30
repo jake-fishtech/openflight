@@ -116,10 +116,11 @@ mat and 0.040 off a tee, which is about 0.8° of launch angle.
 
 Then open http://localhost:8080 or use the touchscreen.
 
-To show completed shots on an iPhone without putting either device on a Wi-Fi
-network, build the small SwiftUI app in `ios/` and start the Pi with `--ble`.
-See the **[iOS Bluetooth Guide](docs/ios-ble.md)** for setup, protocol details,
-and troubleshooting.
+To show completed shots on an iPhone, build the small SwiftUI app in `ios/`.
+It receives shots two ways: over Bluetooth with no network at all (start the Pi
+with `--ble`), or over Wi-Fi from the server that is already running. See the
+**[iOS App Guide](docs/ios-ble.md)** for setup, protocol details, and
+troubleshooting.
 
 ### 5. Sync to the cloud (optional)
 

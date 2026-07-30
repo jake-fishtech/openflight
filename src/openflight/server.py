@@ -32,6 +32,7 @@ from .ops243 import (
 )
 from .rolling_buffer.monitor import estimate_carry_with_spin, get_optimal_spin_for_ball_speed
 from .session_logger import get_session_logger, init_session_logger, log_session_error
+from .shot_stream import SSE_MIMETYPE, ShotStreamBroker, ShotStreamFull
 from .sim import (
     IncompleteShotError,
     PlayerState as SimPlayerState,
@@ -113,6 +114,11 @@ sim_player_state = SimPlayerState(shot_counter=initial_shot_counter())
 
 # Optional Bluetooth Low Energy publisher for the iOS app.
 ble_publisher = None
+
+# Wi-Fi shot delivery for the iOS app. Always available: it exposes the same
+# shots the browser UI already broadcasts over WebSocket, so it adds no reach
+# beyond the existing HTTP server.
+shot_stream = ShotStreamBroker()
 
 _DEFAULT_KLD7_RADC_TUNING = {
     "radc_speed_tolerance_mph": 10.0,
@@ -1280,6 +1286,24 @@ def camera_stream():
         return "Camera not available", 503
 
     return Response(generate_mjpeg(), mimetype="multipart/x-mixed-replace; boundary=frame")
+
+
+@app.route("/api/shots/stream")
+def shots_stream():
+    """Stream completed shots to the iOS app as Server-Sent Events."""
+    try:
+        subscriber = shot_stream.subscribe()
+    except ShotStreamFull as exc:
+        logger.warning("[SERVER] Refused shot stream client: %s", exc)
+        return str(exc), 503
+
+    response = Response(shot_stream.frames(subscriber), mimetype=SSE_MIMETYPE)
+    response.headers["Cache-Control"] = "no-cache"
+    response.headers["X-Accel-Buffering"] = "no"
+    # Covers the case where the response is discarded without ever being
+    # iterated; unsubscribing twice is a no-op.
+    response.call_on_close(lambda: shot_stream.unsubscribe(subscriber))
+    return response
 
 
 @socketio.on("toggle_camera")
@@ -2503,6 +2527,14 @@ def on_shot_detected(shot: Shot):
             ble_publisher.publish(shot_data)
         except Exception as e:  # pylint: disable=broad-exception-caught
             logger.warning("[SERVER] Failed to queue BLE shot: %s", e, exc_info=True)
+
+    # Wi-Fi transport is likewise independent; a stalled client cannot affect
+    # shot recording or the browser UI.
+    if shot_data is not None:
+        try:
+            shot_stream.publish(shot_data)
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.warning("[SERVER] Failed to queue streamed shot: %s", e, exc_info=True)
 
     # Forward to simulator connectors (optional)
     _forward_shot_to_simulators(shot)

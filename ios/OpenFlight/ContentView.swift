@@ -1,7 +1,37 @@
 import SwiftUI
 
+enum ShotTransport: String, CaseIterable, Identifiable {
+    case bluetooth
+    case wifi
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .bluetooth: "Bluetooth"
+        case .wifi: "Wi-Fi"
+        }
+    }
+}
+
 struct ContentView: View {
     @StateObject private var bluetooth = BluetoothManager()
+    @StateObject private var wifi = WiFiShotClient()
+
+    @AppStorage("shotTransport") private var storedTransport = ShotTransport.bluetooth.rawValue
+    @AppStorage("piHost") private var host = WiFiShotClient.defaultHost
+
+    private var transport: ShotTransport {
+        ShotTransport(rawValue: storedTransport) ?? .bluetooth
+    }
+
+    private var state: ConnectionState {
+        transport == .bluetooth ? bluetooth.state : wifi.state
+    }
+
+    private var latestShot: ShotEvent? {
+        transport == .bluetooth ? bluetooth.latestShot : wifi.latestShot
+    }
 
     var body: some View {
         ZStack {
@@ -17,7 +47,7 @@ struct ContentView: View {
                     header
                     connectionCard
 
-                    if let shot = bluetooth.latestShot {
+                    if let shot = latestShot {
                         shotCard(shot)
                     } else {
                         emptyState
@@ -28,7 +58,30 @@ struct ContentView: View {
         }
         .preferredColorScheme(.dark)
         .onAppear {
+            startSelectedTransport()
+        }
+        .onChange(of: storedTransport) {
+            bluetooth.disconnect()
+            wifi.disconnect()
+            startSelectedTransport()
+        }
+    }
+
+    private func startSelectedTransport() {
+        switch transport {
+        case .bluetooth:
             bluetooth.start()
+        case .wifi:
+            wifi.start(host: host)
+        }
+    }
+
+    private func retrySelectedTransport() {
+        switch transport {
+        case .bluetooth:
+            bluetooth.retry()
+        case .wifi:
+            wifi.retry(host: host)
         }
     }
 
@@ -50,31 +103,59 @@ struct ContentView: View {
     }
 
     private var connectionCard: some View {
-        HStack(spacing: 12) {
-            Circle()
-                .fill(statusColor)
-                .frame(width: 10, height: 10)
-                .shadow(color: statusColor.opacity(0.8), radius: 5)
+        VStack(spacing: 14) {
+            Picker("Transport", selection: $storedTransport) {
+                ForEach(ShotTransport.allCases) { option in
+                    Text(option.label).tag(option.rawValue)
+                }
+            }
+            .pickerStyle(.segmented)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(bluetooth.state == .connected ? "OpenFlight Pi" : "Bluetooth")
-                    .font(.subheadline.weight(.semibold))
-                Text(bluetooth.state.description)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            HStack(spacing: 12) {
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 10, height: 10)
+                    .shadow(color: statusColor.opacity(0.8), radius: 5)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(state == .connected ? "OpenFlight Pi" : transport.label)
+                        .font(.subheadline.weight(.semibold))
+                    Text(state.description)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                if state.canRetry {
+                    Button("Retry") {
+                        retrySelectedTransport()
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.green)
+                } else if state != .connected {
+                    ProgressView()
+                        .tint(.green)
+                }
             }
 
-            Spacer()
-
-            if bluetooth.state.canRetry {
-                Button("Retry") {
-                    bluetooth.retry()
+            if transport == .wifi {
+                HStack(spacing: 10) {
+                    Image(systemName: "network")
+                        .foregroundStyle(.secondary)
+                    TextField("raspberrypi.local:8080", text: $host)
+                        .textFieldStyle(.plain)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                        .submitLabel(.go)
+                        .onSubmit {
+                            retrySelectedTransport()
+                        }
                 }
-                .buttonStyle(.bordered)
-                .tint(.green)
-            } else if bluetooth.state != .connected {
-                ProgressView()
-                    .tint(.green)
+                .font(.callout.monospaced())
+                .padding(12)
+                .background(.black.opacity(0.22), in: RoundedRectangle(cornerRadius: 12))
             }
         }
         .padding(16)
@@ -177,7 +258,7 @@ struct ContentView: View {
     }
 
     private var statusColor: Color {
-        switch bluetooth.state {
+        switch state {
         case .connected:
             .green
         case .scanning, .connecting, .discovering:

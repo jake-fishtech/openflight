@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The Pi serves shots over plain HTTP on the local network. This permits
+	     cleartext only for .local names and private address ranges, rather than
+	     disabling App Transport Security outright. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>OpenFlight connects to your Raspberry Pi on this network to receive shot data over Wi-Fi.</string>
+</dict>
+</plist>

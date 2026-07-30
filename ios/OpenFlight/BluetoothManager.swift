@@ -1,42 +1,6 @@
 @preconcurrency import CoreBluetooth
 import Foundation
 
-enum BluetoothConnectionState: Equatable {
-    case idle
-    case unavailable(String)
-    case scanning
-    case connecting
-    case discovering
-    case connected
-    case error(String)
-
-    var description: String {
-        switch self {
-        case .idle:
-            "Ready"
-        case let .unavailable(message), let .error(message):
-            message
-        case .scanning:
-            "Looking for OpenFlight"
-        case .connecting:
-            "Connecting"
-        case .discovering:
-            "Preparing shot notifications"
-        case .connected:
-            "Connected"
-        }
-    }
-
-    var canRetry: Bool {
-        switch self {
-        case .idle, .unavailable, .error:
-            true
-        default:
-            false
-        }
-    }
-}
-
 protocol CentralManaging: AnyObject {
     var state: CBManagerState { get }
     func scanForPeripherals(
@@ -57,14 +21,14 @@ final class BluetoothManager: NSObject, ObservableObject {
         string: "2B28F67E-9011-41D2-98ED-562B47D7A5E4"
     )
 
-    @Published private(set) var state: BluetoothConnectionState = .idle
+    @Published private(set) var state: ConnectionState = .idle
     @Published private(set) var latestShot: ShotEvent?
 
     private var central: CentralManaging!
     private var peripheral: CBPeripheral?
     private var shotCharacteristic: CBCharacteristic?
     private var reassembler = BLEFrameReassembler()
-    private var lastEventID: UUID?
+    private var decoder = ShotEventDecoder()
     private var reconnectTask: Task<Void, Never>?
 
     override convenience init() {
@@ -145,19 +109,11 @@ final class BluetoothManager: NSObject, ObservableObject {
 
     func receive(_ frame: Data) {
         do {
-            guard let payload = try reassembler.append(frame) else {
+            guard let payload = try reassembler.append(frame),
+                  let shot = try decoder.decode(payload)
+            else {
                 return
             }
-            let shot = try JSONDecoder().decode(ShotEvent.self, from: payload)
-            guard shot.schemaVersion == 1 else {
-                throw DecodingError.dataCorrupted(
-                    .init(codingPath: [], debugDescription: "Unsupported shot schema")
-                )
-            }
-            guard shot.eventID != lastEventID else {
-                return
-            }
-            lastEventID = shot.eventID
             latestShot = shot
         } catch {
             state = .error(error.localizedDescription)
