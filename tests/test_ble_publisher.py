@@ -5,7 +5,10 @@ import json
 import logging
 
 from openflight.ble.protocol import SHOT_CHARACTERISTIC_UUID, reassemble_fragments
-from openflight.ble.publisher import BleShotPublisher
+from openflight.ble.publisher import (
+    BleShotPublisher,
+    disable_unsupported_advertisement_properties,
+)
 
 
 def _shot_data(ball_speed=150.0):
@@ -120,3 +123,46 @@ def test_background_startup_failure_is_isolated(caplog):
 
     assert not publisher._thread.is_alive()  # pylint: disable=protected-access
     assert "shot recording will continue without BLE" in caplog.text
+
+
+class _FakeDbusProperty:
+    """Stand-in for ``dbus_next.service._Property``, which is Linux-only."""
+
+    def __init__(self, name):
+        self.name = name
+        self.disabled = False
+
+
+class _FakeAdvertisement:
+    """Mirrors the properties Bless 0.3.0 exports on org.bluez.LEAdvertisement1."""
+
+    Type = _FakeDbusProperty("Type")
+    ServiceUUIDs = _FakeDbusProperty("ServiceUUIDs")
+    LocalName = _FakeDbusProperty("LocalName")
+    TxPower = _FakeDbusProperty("TxPower")
+    MinInterval = _FakeDbusProperty("MinInterval")
+    MaxInterval = _FakeDbusProperty("MaxInterval")
+
+
+def test_controller_unsupported_advertisement_properties_are_hidden():
+    disabled = disable_unsupported_advertisement_properties(_FakeAdvertisement)
+
+    assert disabled == ("MaxInterval", "MinInterval", "TxPower")
+    assert _FakeAdvertisement.TxPower.disabled
+    assert _FakeAdvertisement.MinInterval.disabled
+    assert _FakeAdvertisement.MaxInterval.disabled
+
+
+def test_advertised_identity_properties_are_left_alone():
+    disable_unsupported_advertisement_properties(_FakeAdvertisement)
+
+    assert not _FakeAdvertisement.ServiceUUIDs.disabled
+    assert not _FakeAdvertisement.LocalName.disabled
+    assert not _FakeAdvertisement.Type.disabled
+
+
+def test_missing_advertisement_properties_are_tolerated():
+    class _FutureAdvertisement:
+        ServiceUUIDs = _FakeDbusProperty("ServiceUUIDs")
+
+    assert disable_unsupported_advertisement_properties(_FutureAdvertisement) == ()

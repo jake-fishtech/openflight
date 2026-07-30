@@ -118,6 +118,33 @@ authenticated pairing before extending the existing characteristic.
 - Keep the app in the foreground for the initial connection.
 - Restart OpenFlight after changing the Pi Bluetooth configuration.
 
+**The Pi logs `DBusError: Failed to register advertisement`.**
+
+BlueZ returns that one message for every advertising failure, so check what
+bluetoothd actually rejected:
+
+```bash
+journalctl -u bluetooth -n 20 --no-pager
+```
+
+`Failed to add advertisement: Invalid Parameters (0x0d)` means the kernel
+refused the advertising parameters. Bless 0.3.0 always publishes `TxPower`,
+`MinInterval`, and `MaxInterval`, which BlueZ turns into `MGMT_ADV_PARAM_*`
+flags that controllers without LE Extended Advertising — including the
+Raspberry Pi's — reject. OpenFlight hides those three properties before
+starting the GATT server. To confirm what this adapter accepts, register the
+advertisement one property group at a time:
+
+```bash
+uv run python scripts/hardware-test/test_ble_advertise.py
+```
+
+If the probe fails on `service UUID + LocalName`, the 128-bit service UUID and
+the advertised name do not both fit in the 31-byte legacy advertisement. The
+advertised name is the `BleShotPublisher(name=...)` default in `server.py`;
+shorten it there. The iOS app scans by service UUID, so the name only affects
+what other Bluetooth tools display.
+
 **The Pi logs that Bluetooth is unavailable.**
 
 - Run `uv sync --extra ble`.
