@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 # pylint: disable=wrong-import-position,invalid-name
 from dbus_next import BusType  # noqa: E402
 from dbus_next.aio import MessageBus  # noqa: E402
+from dbus_next.constants import PropertyAccess  # noqa: E402
 from dbus_next.errors import DBusError  # noqa: E402
 from dbus_next.service import ServiceInterface, dbus_property, method  # noqa: E402
 
@@ -51,27 +52,27 @@ class ProbeAdvertisement(ServiceInterface):
     def Release(self):  # noqa: N802
         """Called by BlueZ when it drops the advertisement."""
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def Type(self) -> "s":  # type: ignore[valid-type] # noqa: F821 N802
         return "peripheral"
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def ServiceUUIDs(self) -> "as":  # type: ignore[valid-type] # noqa: F722 N802
         return [SERVICE_UUID]
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def LocalName(self) -> "s":  # type: ignore[valid-type] # noqa: F821 N802
         return LOCAL_NAME
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def TxPower(self) -> "n":  # type: ignore[valid-type] # noqa: F821 N802
         return 20
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def MinInterval(self) -> "u":  # type: ignore[valid-type] # noqa: F821 N802
         return 100
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def MaxInterval(self) -> "u":  # type: ignore[valid-type] # noqa: F821 N802
         return 100
 
