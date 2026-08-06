@@ -129,6 +129,7 @@ class BleShotPublisher:
             bytearray(),
             GATTAttributePermissions.readable,
         )
+        self._install_bluez_subscription_hooks(server)
 
         with self._state_lock:
             self._loop = loop
@@ -149,6 +150,21 @@ class BleShotPublisher:
             await asyncio.gather(worker, return_exceptions=True)
             await server.stop()
             logger.info("[BLE] Advertising stopped")
+
+    def _install_bluez_subscription_hooks(self, server) -> None:
+        """Wire callbacks that Bless 0.3.0 leaves disconnected on BlueZ.
+
+        Bless's Linux backend accepts ``on_subscribe`` and ``on_unsubscribe``
+        constructor keywords but replaces the underlying BlueZ ``StartNotify``
+        and ``StopNotify`` handlers with no-ops. Hook the application object
+        after asynchronous server setup so delivery state follows the iOS
+        notification subscription.
+        """
+        app = getattr(server, "app", None)
+        if app is None:
+            return
+        app.StartNotify = lambda session: self._on_subscribe(None, session)
+        app.StopNotify = lambda session: self._on_unsubscribe(None, session)
 
     def _on_subscribe(self, _characteristic, _session) -> None:
         with self._state_lock:

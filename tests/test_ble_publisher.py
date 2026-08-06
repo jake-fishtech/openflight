@@ -42,6 +42,19 @@ class _Server:
         return True
 
 
+class _BlueZApplication:
+    """Match the subscription hooks exposed by Bless's Linux backend."""
+
+    def __init__(self):
+        self.StartNotify = lambda _session: None
+        self.StopNotify = lambda _session: None
+
+
+class _BlueZServer:
+    def __init__(self):
+        self.app = _BlueZApplication()
+
+
 def test_disconnected_publish_retains_only_latest_payload():
     publisher = BleShotPublisher()
 
@@ -104,6 +117,28 @@ def test_unsubscribe_clears_backlog_but_keeps_latest_payload():
         assert not publisher.subscribed
         assert publisher._queue.empty()  # pylint: disable=protected-access
         assert publisher._latest_payload is not None  # pylint: disable=protected-access
+
+    asyncio.run(run())
+
+
+def test_bluez_subscription_hooks_update_publisher_state_and_replay_latest():
+    """Bless 0.3.0 ignores constructor subscription callbacks on Linux."""
+
+    async def run():
+        publisher = BleShotPublisher()
+        publisher._queue = asyncio.Queue(maxsize=2)  # pylint: disable=protected-access
+        publisher.publish(_shot_data(151.0))
+        server = _BlueZServer()
+
+        publisher._install_bluez_subscription_hooks(server)  # pylint: disable=protected-access
+        server.app.StartNotify(None)
+
+        assert publisher.subscribed
+        assert publisher._queue.get_nowait() == publisher._latest_payload  # pylint: disable=protected-access
+
+        server.app.StopNotify(None)
+
+        assert not publisher.subscribed
 
     asyncio.run(run())
 
