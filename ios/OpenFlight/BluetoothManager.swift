@@ -22,7 +22,9 @@ final class BluetoothManager: NSObject, ObservableObject {
     )
 
     @Published private(set) var state: ConnectionState = .idle
-    @Published private(set) var latestShot: ShotEvent?
+    @Published private(set) var shotHistory = ShotHistory()
+
+    var latestShot: ShotEvent? { shotHistory.latestShot }
 
     private var central: CentralManaging!
     private var peripheral: CBPeripheral?
@@ -114,7 +116,7 @@ final class BluetoothManager: NSObject, ObservableObject {
             else {
                 return
             }
-            latestShot = shot
+            shotHistory.record(shot)
         } catch {
             state = .error(error.localizedDescription)
         }

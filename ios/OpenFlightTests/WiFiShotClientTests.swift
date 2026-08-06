@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import OpenFlight
 
@@ -48,6 +49,8 @@ final class WiFiShotClientTests: XCTestCase {
     func testReceivePublishesSharedFixture() throws {
         let client = WiFiShotClient()
         let payload = try sharedShotFixture()
+        var publishedHistory: [ShotHistory] = []
+        let cancellable = client.$shotHistory.sink { publishedHistory.append($0) }
 
         client.receive(SSEEvent(name: "shot", data: String(decoding: payload, as: UTF8.self)))
 
@@ -56,6 +59,9 @@ final class WiFiShotClientTests: XCTestCase {
             client.latestShot?.eventID.uuidString,
             "B0D91F0A-7950-4D7E-9DD5-AF9777C190E1"
         )
+        XCTAssertEqual(client.shotHistory.shots.count, 1)
+        XCTAssertEqual(publishedHistory.map(\.shots.count), [0, 1])
+        withExtendedLifetime(cancellable) {}
     }
 
     func testReceiveIgnoresReplayWithSameEventID() throws {
@@ -71,6 +77,7 @@ final class WiFiShotClientTests: XCTestCase {
         client.receive(SSEEvent(name: "shot", data: String(decoding: changedReplay, as: UTF8.self)))
 
         XCTAssertEqual(client.latestShot?.ballSpeedMPH, 151.4)
+        XCTAssertEqual(client.shotHistory.shots.count, 1)
     }
 
     func testReceiveIgnoresOtherEventNames() throws {

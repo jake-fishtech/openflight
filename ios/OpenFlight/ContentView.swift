@@ -17,9 +17,17 @@ enum ShotTransport: String, CaseIterable, Identifiable {
 struct ContentView: View {
     @StateObject private var bluetooth = BluetoothManager()
     @StateObject private var wifi = WiFiShotClient()
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var showDrivingRange = false
 
     @AppStorage("shotTransport") private var storedTransport = ShotTransport.bluetooth.rawValue
     @AppStorage("piHost") private var host = WiFiShotClient.defaultHost
+
+    init() {
+        _showDrivingRange = State(
+            initialValue: ProcessInfo.processInfo.arguments.contains("--range-mode")
+        )
+    }
 
     private var transport: ShotTransport {
         ShotTransport(rawValue: storedTransport) ?? .bluetooth
@@ -30,7 +38,19 @@ struct ContentView: View {
     }
 
     private var latestShot: ShotEvent? {
-        transport == .bluetooth ? bluetooth.latestShot : wifi.latestShot
+        if ProcessInfo.processInfo.arguments.contains("--preview-shot") {
+            return .preview
+        }
+        return shots.first
+    }
+
+    private var shots: [ShotEvent] {
+        if ProcessInfo.processInfo.arguments.contains("--preview-shot") {
+            return [.preview]
+        }
+        return transport == .bluetooth
+            ? bluetooth.shotHistory.shots
+            : wifi.shotHistory.shots
     }
 
     var body: some View {
@@ -43,27 +63,43 @@ struct ContentView: View {
             .ignoresSafeArea()
 
             ScrollView {
-                VStack(spacing: 20) {
+                LazyVStack(spacing: 20) {
                     header
                     connectionCard
 
                     if let shot = latestShot {
                         shotCard(shot)
+                            .id(shot.id)
+                            .transition(.opacity)
+
+                        if shots.count > 1 {
+                            shotHistoryCard(Array(shots.dropFirst()))
+                                .transition(.opacity)
+                        }
                     } else {
                         emptyState
                     }
                 }
                 .padding(20)
+                .animation(
+                    reduceMotion ? nil : .easeInOut(duration: 0.25),
+                    value: shots.map(\.id)
+                )
             }
         }
         .preferredColorScheme(.dark)
         .onAppear {
-            startSelectedTransport()
+            if !ProcessInfo.processInfo.arguments.contains("--ui-testing") {
+                startSelectedTransport()
+            }
         }
         .onChange(of: storedTransport) {
             bluetooth.disconnect()
             wifi.disconnect()
             startSelectedTransport()
+        }
+        .fullScreenCover(isPresented: $showDrivingRange) {
+            DrivingRangeView(latestShot: latestShot)
         }
     }
 
@@ -96,6 +132,21 @@ struct ContentView: View {
                     .font(.largeTitle.bold())
             }
             Spacer()
+            Button {
+                showDrivingRange = true
+            } label: {
+                Label("Range", systemImage: "mountain.2.fill")
+                    .font(.subheadline.weight(.bold))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .background(.green.opacity(0.16), in: Capsule())
+                    .overlay {
+                        Capsule().stroke(.green.opacity(0.42), lineWidth: 1)
+                    }
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.green)
+            .accessibilityIdentifier("dashboard.range")
             Image(systemName: "figure.golf")
                 .font(.system(size: 34))
                 .foregroundStyle(.green)
@@ -188,18 +239,25 @@ struct ContentView: View {
                     .foregroundStyle(.green)
             }
 
-            HStack(spacing: 12) {
-                PrimaryMetric(
-                    title: "BALL SPEED",
-                    value: shot.ballSpeedMPH.formatted(.number.precision(.fractionLength(1))),
-                    unit: "MPH"
-                )
-                PrimaryMetric(
-                    title: "CARRY",
-                    value: shot.estimatedCarryYards.formatted(.number.precision(.fractionLength(0))),
-                    unit: "YDS"
-                )
+            GeometryReader { geometry in
+                let metricWidth = (geometry.size.width - 10) / 2
+
+                HStack(spacing: 10) {
+                    PrimaryMetric(
+                        title: "BALL SPEED",
+                        value: shot.ballSpeedMPH.formatted(.number.precision(.fractionLength(1))),
+                        unit: "MPH"
+                    )
+                    .frame(width: metricWidth)
+                    PrimaryMetric(
+                        title: "CARRY",
+                        value: shot.estimatedCarryYards.formatted(.number.precision(.fractionLength(0))),
+                        unit: "YDS"
+                    )
+                    .frame(width: metricWidth)
+                }
             }
+            .frame(height: 108)
 
             Divider()
 
@@ -249,12 +307,48 @@ struct ContentView: View {
                 }
             }
         }
-        .padding(20)
+        .padding(18)
         .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 24))
         .overlay {
             RoundedRectangle(cornerRadius: 24)
                 .stroke(.white.opacity(0.08), lineWidth: 1)
         }
+    }
+
+    private func shotHistoryCard(_ previousShots: [ShotEvent]) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("PREVIOUS SHOTS")
+                    .font(.caption.weight(.bold))
+                    .tracking(1.7)
+                    .foregroundStyle(.green)
+                Spacer()
+                Text(previousShots.count.formatted())
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.bottom, 8)
+
+            LazyVStack(spacing: 0) {
+                ForEach(Array(previousShots.enumerated()), id: \.element.id) { index, shot in
+                    PreviousShotRow(shot: shot)
+                        .transition(.opacity)
+
+                    if index < previousShots.count - 1 {
+                        Divider()
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 16)
+        .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 20))
+        .overlay {
+            RoundedRectangle(cornerRadius: 20)
+                .stroke(.white.opacity(0.07), lineWidth: 1)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Previous shots")
     }
 
     private var statusColor: Color {
@@ -271,8 +365,7 @@ struct ContentView: View {
     }
 
     private func formatted(_ value: Double?, decimals: Int) -> String {
-        guard let value else { return "—" }
-        return value.formatted(.number.precision(.fractionLength(decimals)))
+        ShotMetricFormatter.number(value, decimals: decimals)
     }
 }
 
@@ -286,17 +379,26 @@ private struct PrimaryMetric: View {
             Text(title)
                 .font(.caption2.weight(.bold))
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text(value)
-                    .font(.system(size: 37, weight: .bold, design: .rounded))
-                    .minimumScaleFactor(0.7)
+                    .font(.system(size: 36, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.62)
+                    .allowsTightening(true)
+                    .layoutPriority(1)
                 Text(unit)
-                    .font(.caption.weight(.bold))
+                    .font(.caption2.weight(.bold))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
+        .frame(minHeight: 82)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 13)
         .background(.black.opacity(0.22), in: RoundedRectangle(cornerRadius: 16))
     }
 }
@@ -309,19 +411,68 @@ private struct DetailMetric: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(title)
-                .font(.caption)
+                .font(.callout)
                 .foregroundStyle(.secondary)
             HStack(alignment: .firstTextBaseline, spacing: 3) {
                 Text(value)
-                    .font(.headline.monospacedDigit())
+                    .font(.title3.weight(.semibold).monospacedDigit())
+                    .lineLimit(1)
                 if !unit.isEmpty, value != "—" {
                     Text(unit)
-                        .font(.caption)
+                        .font(.callout)
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct PreviousShotRow: View {
+    let shot: ShotEvent
+
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(shot.displayClub)
+                    .font(.headline)
+                    .lineLimit(1)
+                Text("Completed shot")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            HistoryMetric(
+                value: shot.ballSpeedMPH.formatted(.number.precision(.fractionLength(1))),
+                unit: "MPH"
+            )
+            HistoryMetric(
+                value: shot.estimatedCarryYards.formatted(.number.precision(.fractionLength(0))),
+                unit: "YDS"
+            )
+        }
+        .padding(.vertical, 12)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+private struct HistoryMetric: View {
+    let value: String
+    let unit: String
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 2) {
+            Text(value)
+                .font(.title3.weight(.bold).monospacedDigit())
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            Text(unit)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+        }
+        .frame(minWidth: 62, alignment: .trailing)
     }
 }
 

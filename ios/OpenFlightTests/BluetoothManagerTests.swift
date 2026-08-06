@@ -37,6 +37,7 @@ final class BluetoothManagerTests: XCTestCase {
             manager.latestShot?.eventID.uuidString,
             "B0D91F0A-7950-4D7E-9DD5-AF9777C190E1"
         )
+        XCTAssertEqual(manager.shotHistory.shots.count, 1)
     }
 
     func testReceiveIgnoresReplayWithSameEventID() throws {
@@ -56,6 +57,7 @@ final class BluetoothManagerTests: XCTestCase {
         }
 
         XCTAssertEqual(manager.latestShot?.ballSpeedMPH, 151.4)
+        XCTAssertEqual(manager.shotHistory.shots.count, 1)
     }
 }
 

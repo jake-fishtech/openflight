@@ -1,0 +1,342 @@
+import QuartzCore
+import RealityKit
+import UIKit
+
+@MainActor
+final class RangeSceneController: NSObject {
+    private let arView: ARView
+    private let root = AnchorEntity(world: .zero)
+    private let camera = PerspectiveCamera()
+    private let cameraPose = RangeCameraPlanner().pose
+    private let ball: ModelEntity
+    private let ballShadow: ModelEntity
+    private let landingMarker = Entity()
+    private var tracerDots: [ModelEntity] = []
+    private var tracerTimes: [TimeInterval] = []
+    private var displayLink: CADisplayLink?
+    private var trajectory: FlightTrajectory?
+    private var trajectoryID: UUID?
+    private var playbackStartedAt: CFTimeInterval = 0
+    private var playbackDuration: TimeInterval = 1
+    private var completion: (() -> Void)?
+
+    init(view: ARView, quality: RangeQualityProfile = .current) {
+        arView = view
+        let white = SimpleMaterial(color: .white, roughness: 0.28, isMetallic: false)
+        ball = ModelEntity(mesh: .generateSphere(radius: 0.18), materials: [white])
+        ballShadow = ModelEntity(
+            mesh: .generateSphere(radius: 0.38),
+            materials: [SimpleMaterial(color: UIColor.black.withAlphaComponent(0.28), isMetallic: false)]
+        )
+        ballShadow.scale = SIMD3(1, 0.035, 1)
+        super.init()
+        buildScene(quality: quality)
+    }
+
+    func play(
+        _ trajectory: FlightTrajectory,
+        reduceMotion: Bool,
+        completion: @escaping () -> Void
+    ) {
+        guard trajectory.id != trajectoryID else { return }
+        stopDisplayLink()
+        trajectoryID = trajectory.id
+        self.trajectory = trajectory
+        self.completion = completion
+        playbackDuration = reduceMotion ? 0.9 : trajectory.playbackDuration
+        playbackStartedAt = CACurrentMediaTime()
+        configureTracer(for: trajectory)
+        landingMarker.isEnabled = false
+        ball.isEnabled = true
+        ballShadow.isEnabled = true
+        updateScene(at: 0)
+
+        let link = CADisplayLink(target: self, selector: #selector(displayLinkDidFire(_:)))
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 60, preferred: 60)
+        link.add(to: .main, forMode: .common)
+        displayLink = link
+    }
+
+    func suspend() {
+        stopDisplayLink()
+        completion = nil
+    }
+
+    func tearDown() {
+        suspend()
+        tracerDots.removeAll()
+        arView.scene.anchors.removeAll()
+    }
+
+    @objc private func displayLinkDidFire(_ link: CADisplayLink) {
+        let elapsed = link.timestamp - playbackStartedAt
+        let progress = min(max(elapsed / playbackDuration, 0), 1)
+        updateScene(at: progress)
+        if progress >= 1 {
+            stopDisplayLink()
+            landingMarker.isEnabled = true
+            let callback = completion
+            completion = nil
+            callback?()
+        }
+    }
+
+    private func buildScene(quality: RangeQualityProfile) {
+        arView.environment.background = .color(UIColor(red: 0.34, green: 0.63, blue: 0.88, alpha: 1))
+        arView.renderOptions.insert([.disableCameraGrain, .disableDepthOfField, .disableMotionBlur])
+        arView.scene.addAnchor(root)
+
+        let description = RangeSceneDescription.standard(treeCount: quality.treeCount)
+        addGround(description)
+        addTeeBox()
+        addTargets(description.markers)
+        addTrees(description.trees)
+        addLighting()
+
+        camera.camera.fieldOfViewInDegrees = 58
+        root.addChild(camera)
+        camera.look(
+            at: cameraPose.target,
+            from: cameraPose.position,
+            relativeTo: nil
+        )
+
+        ball.position = SIMD3(0, 0.18, 0)
+        ballShadow.position = SIMD3(0, 0.015, 0)
+        root.addChild(ballShadow)
+        root.addChild(ball)
+
+        buildLandingMarker()
+        root.addChild(landingMarker)
+        landingMarker.isEnabled = false
+
+        let tracerMesh = MeshResource.generateSphere(radius: 0.095)
+        let tracerMaterial = SimpleMaterial(
+            color: UIColor(red: 1, green: 0.83, blue: 0.18, alpha: 0.88),
+            roughness: 0.2,
+            isMetallic: false
+        )
+        for _ in 0 ..< quality.tracerPointCount {
+            let dot = ModelEntity(mesh: tracerMesh, materials: [tracerMaterial])
+            dot.isEnabled = false
+            tracerDots.append(dot)
+            root.addChild(dot)
+        }
+    }
+
+    private func addGround(_ description: RangeSceneDescription) {
+        let ground = ModelEntity(
+            mesh: .generateBox(size: SIMD3(180, 0.12, description.rangeDepthMeters + 90)),
+            materials: [
+                SimpleMaterial(
+                    color: UIColor(red: 0.08, green: 0.30, blue: 0.14, alpha: 1),
+                    roughness: 1,
+                    isMetallic: false
+                )
+            ]
+        )
+        ground.position = SIMD3(0, -0.08, -(description.rangeDepthMeters - 45) / 2)
+        root.addChild(ground)
+
+        let fairway = ModelEntity(
+            mesh: .generateBox(size: SIMD3(description.fairwayWidthMeters, 0.035, description.rangeDepthMeters)),
+            materials: [
+                SimpleMaterial(
+                    color: UIColor(red: 0.20, green: 0.52, blue: 0.22, alpha: 1),
+                    roughness: 0.92,
+                    isMetallic: false
+                )
+            ]
+        )
+        fairway.position = SIMD3(0, 0, -description.rangeDepthMeters / 2 + 8)
+        root.addChild(fairway)
+
+        let stripeMesh = MeshResource.generateBox(size: SIMD3(description.fairwayWidthMeters, 0.01, 18))
+        let stripeMaterial = SimpleMaterial(
+            color: UIColor(red: 0.25, green: 0.59, blue: 0.27, alpha: 1),
+            roughness: 0.95,
+            isMetallic: false
+        )
+        for index in 0 ..< 11 {
+            let stripe = ModelEntity(mesh: stripeMesh, materials: [stripeMaterial])
+            stripe.position = SIMD3(0, 0.025, -Float(index * 36 + 12))
+            root.addChild(stripe)
+        }
+    }
+
+    private func addTeeBox() {
+        let tee = ModelEntity(
+            mesh: .generateBox(size: SIMD3(15, 0.16, 11)),
+            materials: [
+                SimpleMaterial(
+                    color: UIColor(red: 0.16, green: 0.47, blue: 0.20, alpha: 1),
+                    roughness: 0.9,
+                    isMetallic: false
+                )
+            ]
+        )
+        tee.position = SIMD3(0, 0.08, 2.5)
+        root.addChild(tee)
+
+        let teeMarkerMesh = MeshResource.generateSphere(radius: 0.33)
+        let markerMaterial = SimpleMaterial(color: .white, roughness: 0.6, isMetallic: false)
+        for x: Float in [-4, 4] {
+            let marker = ModelEntity(mesh: teeMarkerMesh, materials: [markerMaterial])
+            marker.position = SIMD3(x, 0.19, 0)
+            marker.scale = SIMD3(1, 0.12, 1)
+            root.addChild(marker)
+        }
+    }
+
+    private func addTargets(_ markers: [RangeMarkerDescription]) {
+        for (index, marker) in markers.enumerated() {
+            let distance = Float(marker.yards) * 0.9144
+            let outer = ModelEntity(
+                mesh: .generateSphere(radius: marker.radiusMeters),
+                materials: [
+                    SimpleMaterial(
+                        color: UIColor.white.withAlphaComponent(0.88),
+                        roughness: 0.78,
+                        isMetallic: false
+                    )
+                ]
+            )
+            outer.position = SIMD3(index.isMultiple(of: 2) ? -9 : 9, 0.06, -distance)
+            outer.scale = SIMD3(1, 0.018, 1)
+            root.addChild(outer)
+
+            let inner = ModelEntity(
+                mesh: .generateSphere(radius: marker.radiusMeters * 0.48),
+                materials: [
+                    SimpleMaterial(
+                        color: index.isMultiple(of: 2)
+                            ? UIColor(red: 0.90, green: 0.18, blue: 0.15, alpha: 1)
+                            : UIColor(red: 0.96, green: 0.72, blue: 0.08, alpha: 1),
+                        roughness: 0.72,
+                        isMetallic: false
+                    )
+                ]
+            )
+            inner.position = SIMD3(outer.position.x, 0.085, outer.position.z)
+            inner.scale = SIMD3(1, 0.028, 1)
+            root.addChild(inner)
+        }
+    }
+
+    private func addTrees(_ trees: [RangeTreeDescription]) {
+        let trunkMesh = MeshResource.generateBox(size: SIMD3(0.9, 4.8, 0.9), cornerRadius: 0.32)
+        let crownMesh = MeshResource.generateSphere(radius: 2.8)
+        let trunkMaterial = SimpleMaterial(
+            color: UIColor(red: 0.29, green: 0.16, blue: 0.08, alpha: 1),
+            roughness: 1,
+            isMetallic: false
+        )
+        let crownMaterials = [
+            SimpleMaterial(color: UIColor(red: 0.05, green: 0.26, blue: 0.10, alpha: 1), roughness: 1, isMetallic: false),
+            SimpleMaterial(color: UIColor(red: 0.07, green: 0.34, blue: 0.13, alpha: 1), roughness: 1, isMetallic: false),
+        ]
+
+        for (index, tree) in trees.enumerated() {
+            let group = Entity()
+            group.position = SIMD3(tree.xMeters, 0, -tree.downrangeMeters)
+            group.scale = SIMD3(repeating: tree.scale)
+
+            let trunk = ModelEntity(mesh: trunkMesh, materials: [trunkMaterial])
+            trunk.position.y = 2.4
+            group.addChild(trunk)
+
+            let crown = ModelEntity(mesh: crownMesh, materials: [crownMaterials[index % crownMaterials.count]])
+            crown.position = SIMD3(0, 6.2, 0)
+            group.addChild(crown)
+
+            let crownTop = ModelEntity(mesh: crownMesh, materials: [crownMaterials[(index + 1) % crownMaterials.count]])
+            crownTop.scale = SIMD3(repeating: 0.68)
+            crownTop.position = SIMD3(0.7, 8.2, -0.3)
+            group.addChild(crownTop)
+            root.addChild(group)
+        }
+    }
+
+    private func addLighting() {
+        let sun = DirectionalLight()
+        sun.light.color = .white
+        sun.light.intensity = 34_000
+        sun.look(
+            at: SIMD3<Float>(0, 0, -120),
+            from: SIMD3<Float>(-75, 120, 45),
+            relativeTo: nil
+        )
+        root.addChild(sun)
+    }
+
+    private func buildLandingMarker() {
+        let outer = ModelEntity(
+            mesh: .generateSphere(radius: 2.2),
+            materials: [SimpleMaterial(color: UIColor.white.withAlphaComponent(0.85), isMetallic: false)]
+        )
+        let inner = ModelEntity(
+            mesh: .generateSphere(radius: 1.35),
+            materials: [
+                SimpleMaterial(
+                    color: UIColor(red: 1, green: 0.72, blue: 0.06, alpha: 0.95),
+                    roughness: 0.35,
+                    isMetallic: false
+                )
+            ]
+        )
+        outer.position.y = 0.065
+        outer.scale = SIMD3(1, 0.025, 1)
+        inner.position.y = 0.09
+        inner.scale = SIMD3(1, 0.035, 1)
+        landingMarker.addChild(outer)
+        landingMarker.addChild(inner)
+    }
+
+    private func configureTracer(for trajectory: FlightTrajectory) {
+        tracerTimes.removeAll(keepingCapacity: true)
+        tracerDots.forEach { $0.isEnabled = false }
+        guard !trajectory.points.isEmpty else { return }
+
+        for (index, dot) in tracerDots.enumerated() {
+            let fraction = tracerDots.count > 1
+                ? Double(index) / Double(tracerDots.count - 1)
+                : 0
+            let time = trajectory.flightTime * fraction
+            guard let point = trajectory.point(at: time) else { continue }
+            dot.position = scenePosition(point.positionMeters)
+            dot.scale = SIMD3(repeating: Float(0.72 + fraction * 0.28))
+            tracerTimes.append(time)
+        }
+    }
+
+    private func updateScene(at progress: Double) {
+        guard let trajectory,
+              let point = trajectory.point(at: trajectory.flightTime * progress)
+        else {
+            return
+        }
+        let position = scenePosition(point.positionMeters)
+        ball.position = position
+        ballShadow.position = SIMD3(position.x, 0.025, position.z)
+        let shadowScale = max(0.45, 1 - position.y / 85)
+        ballShadow.scale = SIMD3(shadowScale, 0.035, shadowScale)
+
+        let currentTime = trajectory.flightTime * progress
+        for (index, dot) in tracerDots.enumerated() {
+            dot.isEnabled = index < tracerTimes.count && tracerTimes[index] <= currentTime
+        }
+
+        if progress >= 1 {
+            landingMarker.position = SIMD3(position.x, 0, position.z)
+        }
+    }
+
+    private func scenePosition(_ position: SIMD3<Double>) -> SIMD3<Float> {
+        SIMD3(Float(position.x), Float(position.y) + 0.18, -Float(position.z))
+    }
+
+    private func stopDisplayLink() {
+        displayLink?.invalidate()
+        displayLink = nil
+    }
+}

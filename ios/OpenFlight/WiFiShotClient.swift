@@ -42,7 +42,9 @@ final class WiFiShotClient: ObservableObject {
     static let maximumReconnectDelay: Duration = .seconds(15)
 
     @Published private(set) var state: ConnectionState = .idle
-    @Published private(set) var latestShot: ShotEvent?
+    @Published private(set) var shotHistory = ShotHistory()
+
+    var latestShot: ShotEvent? { shotHistory.latestShot }
 
     private let session: URLSession
     private var streamTask: Task<Void, Never>?
@@ -113,7 +115,7 @@ final class WiFiShotClient: ObservableObject {
         guard event.name == nil || event.name == "shot" else { return }
         do {
             guard let shot = try decoder.decode(Data(event.data.utf8)) else { return }
-            latestShot = shot
+            shotHistory.record(shot)
         } catch {
             state = .error(error.localizedDescription)
         }
