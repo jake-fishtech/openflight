@@ -4,6 +4,14 @@ import UIKit
 
 @MainActor
 final class RangeSceneController: NSObject {
+    private struct TracerSegmentSample {
+        let startTime: TimeInterval
+        let endTime: TimeInterval
+        let startPosition: SIMD3<Float>
+        let endPosition: SIMD3<Float>
+        let width: Float
+    }
+
     private let arView: ARView
     private let root = AnchorEntity(world: .zero)
     private let camera = PerspectiveCamera()
@@ -11,8 +19,9 @@ final class RangeSceneController: NSObject {
     private let ball: ModelEntity
     private let ballShadow: ModelEntity
     private let landingMarker = Entity()
-    private var tracerDots: [ModelEntity] = []
-    private var tracerTimes: [TimeInterval] = []
+    private var tracerSegments: [ModelEntity] = []
+    private var tracerSamples: [TracerSegmentSample?] = []
+    private var tracerFullyRevealed: [Bool] = []
     private var displayLink: CADisplayLink?
     private var trajectory: FlightTrajectory?
     private var trajectoryID: UUID?
@@ -64,7 +73,9 @@ final class RangeSceneController: NSObject {
 
     func tearDown() {
         suspend()
-        tracerDots.removeAll()
+        tracerSegments.removeAll()
+        tracerSamples.removeAll()
+        tracerFullyRevealed.removeAll()
         arView.scene.anchors.removeAll()
     }
 
@@ -110,17 +121,23 @@ final class RangeSceneController: NSObject {
         root.addChild(landingMarker)
         landingMarker.isEnabled = false
 
-        let tracerMesh = MeshResource.generateSphere(radius: 0.095)
-        let tracerMaterial = SimpleMaterial(
-            color: UIColor(red: 1, green: 0.83, blue: 0.18, alpha: 0.88),
-            roughness: 0.2,
-            isMetallic: false
+        let tracerStyle = RangeTracerStyle.highVisibility
+        // Flush-ended segments meet without the visible beads or gaps produced
+        // by a chain of spheres. A box also keeps the iOS 17 deployment target.
+        let tracerMesh = MeshResource.generateBox(size: SIMD3<Float>(1, 1, 1))
+        let tracerMaterial = UnlitMaterial(
+            color: UIColor(
+                red: 1,
+                green: 0.78,
+                blue: 0.04,
+                alpha: CGFloat(tracerStyle.opacity)
+            )
         )
         for _ in 0 ..< quality.tracerPointCount {
-            let dot = ModelEntity(mesh: tracerMesh, materials: [tracerMaterial])
-            dot.isEnabled = false
-            tracerDots.append(dot)
-            root.addChild(dot)
+            let segment = ModelEntity(mesh: tracerMesh, materials: [tracerMaterial])
+            segment.isEnabled = false
+            tracerSegments.append(segment)
+            root.addChild(segment)
         }
     }
 
@@ -293,19 +310,36 @@ final class RangeSceneController: NSObject {
     }
 
     private func configureTracer(for trajectory: FlightTrajectory) {
-        tracerTimes.removeAll(keepingCapacity: true)
-        tracerDots.forEach { $0.isEnabled = false }
+        tracerSamples.removeAll(keepingCapacity: true)
+        tracerFullyRevealed = Array(repeating: false, count: tracerSegments.count)
+        tracerSegments.forEach { $0.isEnabled = false }
         guard !trajectory.points.isEmpty else { return }
+        let tracerStyle = RangeTracerStyle.highVisibility
 
-        for (index, dot) in tracerDots.enumerated() {
-            let fraction = tracerDots.count > 1
-                ? Double(index) / Double(tracerDots.count - 1)
-                : 0
-            let time = trajectory.flightTime * fraction
-            guard let point = trajectory.point(at: time) else { continue }
-            dot.position = scenePosition(point.positionMeters)
-            dot.scale = SIMD3(repeating: Float(0.72 + fraction * 0.28))
-            tracerTimes.append(time)
+        for index in tracerSegments.indices {
+            let startFraction = Double(index) / Double(tracerSegments.count)
+            let endFraction = Double(index + 1) / Double(tracerSegments.count)
+            let startTime = trajectory.flightTime * startFraction
+            let endTime = trajectory.flightTime * endFraction
+            guard let startPoint = trajectory.point(at: startTime),
+                  let endPoint = trajectory.point(at: endTime)
+            else {
+                tracerSamples.append(nil)
+                continue
+            }
+
+            let widthFraction = Float((startFraction + endFraction) / 2)
+            let width = tracerStyle.nearWidthMeters
+                + widthFraction * (tracerStyle.farWidthMeters - tracerStyle.nearWidthMeters)
+            let sample = TracerSegmentSample(
+                startTime: startTime,
+                endTime: endTime,
+                startPosition: scenePosition(startPoint.positionMeters),
+                endPosition: scenePosition(endPoint.positionMeters),
+                width: width
+            )
+            tracerSamples.append(sample)
+            configureTracerSegment(tracerSegments[index], sample: sample)
         }
     }
 
@@ -322,8 +356,34 @@ final class RangeSceneController: NSObject {
         ballShadow.scale = SIMD3(shadowScale, 0.035, shadowScale)
 
         let currentTime = trajectory.flightTime * progress
-        for (index, dot) in tracerDots.enumerated() {
-            dot.isEnabled = index < tracerTimes.count && tracerTimes[index] <= currentTime
+        for (index, segment) in tracerSegments.enumerated() {
+            guard index < tracerSamples.count, let sample = tracerSamples[index] else {
+                segment.isEnabled = false
+                continue
+            }
+
+            if currentTime <= sample.startTime {
+                segment.isEnabled = false
+            } else if currentTime >= sample.endTime {
+                if !tracerFullyRevealed[index] {
+                    configureTracerSegment(segment, sample: sample)
+                    tracerFullyRevealed[index] = true
+                }
+                segment.isEnabled = true
+            } else {
+                let segmentProgress = Float(
+                    (currentTime - sample.startTime) / (sample.endTime - sample.startTime)
+                )
+                let partialEnd = sample.startPosition
+                    + (sample.endPosition - sample.startPosition) * segmentProgress
+                configureTracerSegment(
+                    segment,
+                    from: sample.startPosition,
+                    to: partialEnd,
+                    width: sample.width
+                )
+                segment.isEnabled = true
+            }
         }
 
         if progress >= 1 {
@@ -333,6 +393,39 @@ final class RangeSceneController: NSObject {
 
     private func scenePosition(_ position: SIMD3<Double>) -> SIMD3<Float> {
         SIMD3(Float(position.x), Float(position.y) + 0.18, -Float(position.z))
+    }
+
+    private func configureTracerSegment(
+        _ segment: ModelEntity,
+        sample: TracerSegmentSample
+    ) {
+        configureTracerSegment(
+            segment,
+            from: sample.startPosition,
+            to: sample.endPosition,
+            width: sample.width
+        )
+    }
+
+    private func configureTracerSegment(
+        _ segment: ModelEntity,
+        from start: SIMD3<Float>,
+        to end: SIMD3<Float>,
+        width: Float
+    ) {
+        let delta = end - start
+        let length = simd_length(delta)
+        guard length > 0.0001 else {
+            segment.isEnabled = false
+            return
+        }
+
+        segment.position = (start + end) / 2
+        segment.orientation = simd_quatf(
+            from: SIMD3<Float>(0, 1, 0),
+            to: delta / length
+        )
+        segment.scale = SIMD3(width, length, width)
     }
 
     private func stopDisplayLink() {

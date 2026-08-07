@@ -73,6 +73,7 @@ final class BluetoothManager: NSObject, ObservableObject {
     @Published private(set) var state: ConnectionState = .idle
     @Published private(set) var shotHistory = ShotHistory()
     @Published private(set) var supportsPhoneControls = false
+    @Published private(set) var activeClub: GolfClub?
 
     var latestShot: ShotEvent? { shotHistory.latestShot }
 
@@ -122,6 +123,7 @@ final class BluetoothManager: NSObject, ObservableObject {
         shotCharacteristic = nil
         controlCharacteristic = nil
         supportsPhoneControls = false
+        activeClub = nil
         reassembler.reset()
         controlReassembler.reset()
         state = .idle
@@ -197,7 +199,18 @@ final class BluetoothManager: NSObject, ObservableObject {
         let requestID = UUID().uuidString.lowercased()
         let command = try BluetoothClubCommand.encode(club: club, requestID: requestID)
         let result = try await sendControlCommand(command, requestID: requestID)
-        return try JSONDecoder().decode(ClubSelectionResponse.self, from: result)
+        let response = try JSONDecoder().decode(ClubSelectionResponse.self, from: result)
+        activeClub = response.club
+        return response
+    }
+
+    func currentClub() async throws -> ClubSelectionResponse {
+        let requestID = UUID().uuidString.lowercased()
+        let command = try BluetoothClubCommand.encodeCurrent(requestID: requestID)
+        let result = try await sendControlCommand(command, requestID: requestID)
+        let response = try JSONDecoder().decode(ClubSelectionResponse.self, from: result)
+        activeClub = response.club
+        return response
     }
 
     private func sendControlCommand(_ command: Data, requestID: String) async throws -> Data {
@@ -242,13 +255,30 @@ final class BluetoothManager: NSObject, ObservableObject {
         peripheral.writeValue(frame, for: controlCharacteristic, type: .withResponse)
     }
 
-    private func receiveControlResponse(_ frame: Data) {
+    func receiveControl(_ frame: Data) {
         do {
             guard let payload = try controlReassembler.append(frame) else { return }
+            if try applyClubStateEvent(payload) {
+                return
+            }
             try completeControlRequest(with: payload)
         } catch {
             failPendingControl(with: error)
         }
+    }
+
+    private func applyClubStateEvent(_ payload: Data) throws -> Bool {
+        guard let object = try JSONSerialization.jsonObject(with: payload) as? [String: Any],
+              object["type"] as? String == "club_changed"
+        else {
+            return false
+        }
+        let update = try JSONDecoder().decode(ClubStateEvent.self, from: payload)
+        guard update.schemaVersion == 1 else {
+            throw BluetoothControlError.invalidResponse
+        }
+        activeClub = update.club
+        return true
     }
 
     private func completeControlRequest(with payload: Data) throws {
@@ -331,6 +361,7 @@ extension BluetoothManager: @preconcurrency CBCentralManagerDelegate {
         shotCharacteristic = nil
         controlCharacteristic = nil
         supportsPhoneControls = false
+        activeClub = nil
         reassembler.reset()
         controlReassembler.reset()
         state = .scanning
@@ -416,7 +447,7 @@ extension BluetoothManager: @preconcurrency CBPeripheralDelegate {
         }
         guard let value = characteristic.value else { return }
         if characteristic.uuid == Self.controlCharacteristicUUID {
-            receiveControlResponse(value)
+            receiveControl(value)
         } else if characteristic.uuid == Self.shotCharacteristicUUID {
             receive(value)
         }

@@ -26,5 +26,13 @@ final class RangeSceneDescriptionTests: XCTestCase {
         )
         XCTAssertLessThanOrEqual(RangeQualityProfile.high.tracerPointCount, 120)
     }
-}
 
+    func testContinuousTracerIsThinTranslucentAndCompensatesForDistance() {
+        let style = RangeTracerStyle.highVisibility
+
+        XCTAssertLessThan(style.nearWidthMeters, 0.10)
+        XCTAssertGreaterThan(style.farWidthMeters, style.nearWidthMeters)
+        XCTAssertGreaterThan(style.opacity, 0.75)
+        XCTAssertLessThan(style.opacity, 1)
+    }
+}

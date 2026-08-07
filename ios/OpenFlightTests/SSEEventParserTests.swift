@@ -2,6 +2,45 @@ import XCTest
 @testable import OpenFlight
 
 final class SSEEventParserTests: XCTestCase {
+    func testByteStreamPreservesBlankLineAndDispatchesEvent() {
+        var parser = SSEByteStreamParser()
+        let wireEvent = "event: shot\ndata: {\"schema_version\":1}\n\n"
+
+        let events = wireEvent.utf8.compactMap { parser.append(byte: $0) }
+
+        XCTAssertEqual(
+            events,
+            [SSEEvent(name: "shot", data: "{\"schema_version\":1}")]
+        )
+    }
+
+    func testByteStreamHandlesCRLFAndConsecutiveEvents() {
+        var parser = SSEByteStreamParser()
+        let stream = "data: first\r\n\r\ndata: second\r\n\r\n"
+
+        let events = stream.utf8.compactMap { parser.append(byte: $0) }
+
+        XCTAssertEqual(
+            events,
+            [
+                SSEEvent(name: nil, data: "first"),
+                SSEEvent(name: nil, data: "second"),
+            ]
+        )
+    }
+
+    func testByteStreamResetDiscardsPartialLineAndEvent() {
+        var parser = SSEByteStreamParser()
+        for byte in "event: shot\ndata: partial".utf8 {
+            XCTAssertNil(parser.append(byte: byte))
+        }
+
+        parser.reset()
+        let events = "data: replacement\n\n".utf8.compactMap { parser.append(byte: $0) }
+
+        XCTAssertEqual(events, [SSEEvent(name: nil, data: "replacement")])
+    }
+
     func testBlankLineDispatchesNamedEvent() {
         var parser = SSEEventParser()
 

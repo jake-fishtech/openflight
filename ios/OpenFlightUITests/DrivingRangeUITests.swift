@@ -13,6 +13,7 @@ final class DrivingRangeUITests: XCTestCase {
         XCTAssertTrue(app.buttons["range.exit"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.descendants(matching: .any)["range.ballSpeed"].exists)
         XCTAssertTrue(app.descendants(matching: .any)["range.carry"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["range.clubSelector"].exists)
 
         app.buttons["range.exit"].tap()
         XCTAssertTrue(rangeButton.waitForExistence(timeout: 3))

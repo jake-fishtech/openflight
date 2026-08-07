@@ -32,6 +32,28 @@ _OPTIONAL_SHOT_FIELDS = (
 )
 
 
+def build_club_event(club: str) -> dict:
+    """Build the V1 event broadcast whenever the authoritative club changes."""
+    if not isinstance(club, str) or not club:
+        raise ValueError("Club must be a non-empty string")
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "type": "club_changed",
+        "club": club,
+    }
+
+
+def encode_club_event(club: str) -> bytes:
+    """Encode a club-state event as deterministic, compact UTF-8 JSON."""
+    return json.dumps(
+        build_club_event(club),
+        allow_nan=False,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+
+
 def build_shot_event(shot_data: Mapping, *, event_id: str | None = None) -> dict:
     """Build the stable, display-focused V1 payload from ``shot_to_dict`` output."""
     event = {

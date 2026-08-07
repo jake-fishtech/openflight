@@ -12,10 +12,24 @@ class _Monitor:
         self.clubs.append(club)
 
 
+class _ClubPublisher:
+    def __init__(self):
+        self.clubs = []
+
+    def publish_club(self, club):
+        self.clubs.append(club)
+        return True
+
+
 def test_apply_club_selection_updates_monitor_and_broadcasts(monkeypatch):
     monitor = _Monitor()
+    stream = _ClubPublisher()
+    ble = _ClubPublisher()
     emitted = []
     monkeypatch.setattr(server_module, "monitor", monitor)
+    monkeypatch.setattr(server_module, "shot_stream", stream)
+    monkeypatch.setattr(server_module, "ble_publisher", ble)
+    monkeypatch.setattr(server_module, "active_club", ClubType.DRIVER)
     monkeypatch.setattr(
         server_module.socketio, "emit", lambda event, data: emitted.append((event, data))
     )
@@ -26,6 +40,9 @@ def test_apply_club_selection_updates_monitor_and_broadcasts(monkeypatch):
     assert response == {"status": "applied", "club": "7-iron"}
     assert monitor.clubs == [ClubType.IRON_7]
     assert emitted == [("club_changed", {"club": "7-iron"})]
+    assert server_module.active_club is ClubType.IRON_7
+    assert stream.clubs == ["7-iron"]
+    assert ble.clubs == ["7-iron"]
 
 
 def test_apply_club_selection_rejects_unknown_club(monkeypatch):
@@ -53,6 +70,15 @@ def test_wifi_club_endpoint_uses_shared_selection_logic(monkeypatch):
     assert monitor.clubs == [ClubType.PW]
 
 
+def test_wifi_club_endpoint_returns_authoritative_selection(monkeypatch):
+    monkeypatch.setattr(server_module, "active_club", ClubType.WOOD_3)
+
+    response = server_module.app.test_client().get("/api/club")
+
+    assert response.status_code == 200
+    assert response.get_json() == {"status": "current", "club": "3-wood"}
+
+
 def test_control_dispatch_routes_club_command(monkeypatch):
     monitor = _Monitor()
     monkeypatch.setattr(server_module, "monitor", monitor)
@@ -62,3 +88,12 @@ def test_control_dispatch_routes_club_command(monkeypatch):
     assert status == 200
     assert response["club"] == "3-wood"
     assert monitor.clubs == [ClubType.WOOD_3]
+
+
+def test_control_dispatch_returns_authoritative_club(monkeypatch):
+    monkeypatch.setattr(server_module, "active_club", ClubType.WOOD_5)
+
+    response, status = server_module.dispatch_phone_control_command("get_club", {})
+
+    assert status == 200
+    assert response == {"status": "current", "club": "5-wood"}

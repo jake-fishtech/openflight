@@ -66,6 +66,20 @@ def test_publish_reaches_every_subscriber():
     assert broker.subscriber_count == 2
 
 
+def test_club_change_reaches_every_subscriber():
+    broker = ShotStreamBroker()
+    first = broker.subscribe()
+    second = broker.subscribe()
+
+    assert broker.publish_club("3-wood")
+
+    expected = (
+        'event: club_changed\ndata: {"club":"3-wood","schema_version":1,"type":"club_changed"}\n\n'
+    )
+    assert format_event(first.get_nowait()) == expected
+    assert format_event(second.get_nowait()) == expected
+
+
 def test_subscriber_replays_latest_shot_on_connect():
     broker = ShotStreamBroker()
     broker.publish(_shot_data(140.0))

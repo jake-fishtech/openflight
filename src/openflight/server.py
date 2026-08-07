@@ -163,6 +163,12 @@ sim_player_state = SimPlayerState(shot_counter=initial_shot_counter())
 # Optional Bluetooth Low Energy publisher for the iOS app.
 ble_publisher = None
 
+# One Pi-owned selection is shared by the browser UI and every phone/tablet.
+# Monitors start on driver, and successful changes update this value atomically
+# before being fanned out over all enabled transports.
+active_club = ClubType.DRIVER
+club_selection_lock = threading.Lock()
+
 # Wi-Fi shot delivery for the iOS app. Always available: it exposes the same
 # shots the browser UI already broadcasts over WebSocket, so it adds no reach
 # beyond the existing HTTP server.
@@ -1079,6 +1085,7 @@ def apply_iwr6843_orientation_calibration(payload):
 
 def apply_club_selection(payload):
     """Set the club used to tag and process future shots."""
+    global active_club  # pylint: disable=global-statement
     if not isinstance(payload, dict):
         return {"error": "Club selection must be a JSON object"}, 400
     club_name = payload.get("club")
@@ -1092,15 +1099,42 @@ def apply_club_selection(payload):
     if monitor is None:
         return {"error": "Launch monitor is not ready"}, 409
 
-    try:
-        monitor.set_club(club)
-    except Exception:  # pylint: disable=broad-exception-caught
-        logger.exception("[SERVER] Failed to set club to %s", club.value)
-        return {"error": "OpenFlight could not change the club"}, 500
-    response = {"status": "applied", "club": club.value}
-    socketio.emit("club_changed", {"club": club.value})
+    with club_selection_lock:
+        try:
+            monitor.set_club(club)
+        except Exception:  # pylint: disable=broad-exception-caught
+            logger.exception("[SERVER] Failed to set club to %s", club.value)
+            return {"error": "OpenFlight could not change the club"}, 500
+        active_club = club
+        response = {"status": "applied", "club": club.value}
+        _broadcast_club_selection(club)
     logger.info("[SERVER] Club changed to %s", club.value)
     return response, 200
+
+
+def current_club_selection(_payload=None):
+    """Return the Pi-owned club without changing monitor state."""
+    with club_selection_lock:
+        club_value = active_club.value
+    return {"status": "current", "club": club_value}, 200
+
+
+def _broadcast_club_selection(club: ClubType) -> None:
+    """Fan one authoritative club update out over every active transport."""
+    club_data = {"club": club.value}
+    try:
+        socketio.emit("club_changed", club_data)
+    except Exception:  # pylint: disable=broad-exception-caught
+        logger.warning("[SERVER] Failed to broadcast club over WebSocket", exc_info=True)
+    try:
+        shot_stream.publish_club(club.value)
+    except Exception:  # pylint: disable=broad-exception-caught
+        logger.warning("[SERVER] Failed to broadcast club over Wi-Fi stream", exc_info=True)
+    if ble_publisher is not None:
+        try:
+            ble_publisher.publish_club(club.value)
+        except Exception:  # pylint: disable=broad-exception-caught
+            logger.warning("[SERVER] Failed to broadcast club over BLE", exc_info=True)
 
 
 def dispatch_phone_control_command(command_type, payload):
@@ -1108,6 +1142,7 @@ def dispatch_phone_control_command(command_type, payload):
     handlers = {
         "iwr6843_orientation_calibration": apply_iwr6843_orientation_calibration,
         "set_club": apply_club_selection,
+        "get_club": current_club_selection,
     }
     handler = handlers.get(command_type)
     if handler is None:
@@ -1115,9 +1150,11 @@ def dispatch_phone_control_command(command_type, payload):
     return handler(payload)
 
 
-@app.route("/api/club", methods=["POST"])
+@app.route("/api/club", methods=["GET", "POST"])
 def api_club_selection():
-    """Set the active club over Wi-Fi."""
+    """Read or set the active club over Wi-Fi."""
+    if request.method == "GET":
+        return current_club_selection()
     return apply_club_selection(request.get_json(silent=True))
 
 
@@ -1859,6 +1896,7 @@ def handle_connect():
     """Handle client connection."""
     print("Client connected")
     _emit_sim_snapshot()
+    socketio.emit("club_changed", {"club": active_club.value})
     if monitor:
         stats = monitor.get_session_stats()
         socketio.emit(
@@ -2218,6 +2256,7 @@ def _sim_on_status(target: str, event) -> None:
 
 def _sim_on_inbound(target: str, event) -> None:
     """Apply an inbound simulator event (player/club update, error, ack)."""
+    global active_club  # pylint: disable=global-statement
     if isinstance(event, PlayerUpdate):
         sim_player_state.apply(event)
         club_value = sim_player_state.club.value
@@ -2231,12 +2270,17 @@ def _sim_on_inbound(target: str, event) -> None:
             sl.log_sim_player(target=target, handed=sim_player_state.handed, club=club_value)
         # The monitor owns current-club state for shot tagging and carry/spin
         # model selection; keep it in sync with the sim's canonical club.
-        if monitor is not None:
-            try:
-                monitor.set_club(sim_player_state.club)
-            except Exception:  # pylint: disable=broad-except
-                logger.exception("[sim] monitor.set_club failed")
-        socketio.emit("club_changed", {"club": club_value})
+        with club_selection_lock:
+            monitor_updated = True
+            if monitor is not None:
+                try:
+                    monitor.set_club(sim_player_state.club)
+                except Exception:  # pylint: disable=broad-except
+                    logger.exception("[sim] monitor.set_club failed")
+                    monitor_updated = False
+            if monitor_updated:
+                active_club = sim_player_state.club
+                _broadcast_club_selection(active_club)
     elif isinstance(event, SimError):
         logger.warning("[sim] ← %s error: %s", target, event.message)
         socketio.emit("sim_status", {"target": target, "state": "error", "message": event.message})

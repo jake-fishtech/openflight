@@ -110,8 +110,25 @@ struct ContentView: View {
         .onChange(of: bluetooth.supportsPhoneControls) {
             synchronizeStoredClubIfReady()
         }
+        .onChange(of: wifi.activeClub) {
+            if transport == .wifi, let club = wifi.activeClub {
+                storedClub = club.rawValue
+            }
+        }
+        .onChange(of: bluetooth.activeClub) {
+            if transport == .bluetooth, let club = bluetooth.activeClub {
+                storedClub = club.rawValue
+            }
+        }
         .fullScreenCover(isPresented: $showDrivingRange) {
-            DrivingRangeView(latestShot: latestShot)
+            DrivingRangeView(
+                latestShot: latestShot,
+                selectedClub: selectedClub,
+                isChangingClub: isChangingClub,
+                clubSelectionEnabled: state == .connected,
+                clubError: clubError,
+                onSelectClub: changeClub
+            )
         }
         .sheet(isPresented: $showRadarCalibration) {
             NavigationStack {
@@ -259,19 +276,12 @@ struct ContentView: View {
                 .tracking(1.4)
                 .foregroundStyle(.secondary)
 
-            Menu {
-                ForEach(GolfClub.allCases) { club in
-                    Button {
-                        changeClub(to: club)
-                    } label: {
-                        if club == selectedClub {
-                            Label(club.displayName, systemImage: "checkmark")
-                        } else {
-                            Text(club.displayName)
-                        }
-                    }
-                }
-            } label: {
+            ClubSelectionMenu(
+                selectedClub: selectedClub,
+                isChanging: isChangingClub,
+                isEnabled: state == .connected,
+                onSelect: changeClub
+            ) {
                 HStack {
                     Image(systemName: "figure.golf")
                     Text(selectedClub.displayName)
@@ -288,7 +298,6 @@ struct ContentView: View {
                 .background(.black.opacity(0.22), in: RoundedRectangle(cornerRadius: 12))
             }
             .buttonStyle(.plain)
-            .disabled(isChangingClub || state != .connected)
             .accessibilityIdentifier("dashboard.clubSelector")
 
             if let clubError {
@@ -324,7 +333,23 @@ struct ContentView: View {
         if transport == .bluetooth, !bluetooth.supportsPhoneControls {
             return
         }
-        changeClub(to: selectedClub)
+        isChangingClub = true
+        clubError = nil
+        Task {
+            do {
+                let response: ClubSelectionResponse
+                switch transport {
+                case .bluetooth:
+                    response = try await bluetooth.currentClub()
+                case .wifi:
+                    response = try await clubClient.current(host: host)
+                }
+                storedClub = response.club.rawValue
+            } catch {
+                clubError = error.localizedDescription
+            }
+            isChangingClub = false
+        }
     }
 
     private var emptyState: some View {

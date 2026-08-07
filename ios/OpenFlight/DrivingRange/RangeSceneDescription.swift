@@ -43,6 +43,18 @@ struct RangeSceneDescription: Equatable, Sendable {
     }
 }
 
+struct RangeTracerStyle: Equatable, Sendable {
+    let nearWidthMeters: Float
+    let farWidthMeters: Float
+    let opacity: Float
+
+    static let highVisibility = RangeTracerStyle(
+        nearWidthMeters: 0.040,
+        farWidthMeters: 0.26,
+        opacity: 0.84
+    )
+}
+
 enum RangeQualityProfile: Equatable, Sendable {
     case balanced
     case high
@@ -65,4 +77,3 @@ enum RangeQualityProfile: Equatable, Sendable {
         }
     }
 }
-

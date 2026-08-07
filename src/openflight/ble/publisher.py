@@ -15,6 +15,7 @@ from .protocol import (
     SERVICE_UUID,
     SHOT_CHARACTERISTIC_UUID,
     FragmentReassembler,
+    encode_club_event,
     encode_shot_event,
     fragment_payload,
 )
@@ -52,6 +53,7 @@ class BleShotPublisher:
         self._sequence = 0
         self._control_sequence = 0
         self._control_reassembler = FragmentReassembler()
+        self._control_send_lock: asyncio.Lock | None = None
 
     @property
     def subscribed(self) -> bool:
@@ -102,6 +104,21 @@ class BleShotPublisher:
             loop.call_soon_threadsafe(self._enqueue_payload, payload)
         return True
 
+    def publish_club(self, club: str) -> bool:
+        """Notify connected centrals that the authoritative club changed."""
+        try:
+            payload = encode_club_event(club)
+        except (TypeError, ValueError):
+            logger.warning("[BLE] Failed to encode club payload", exc_info=True)
+            return False
+
+        with self._state_lock:
+            loop = self._loop
+            subscribed = self._subscribed
+        if loop and subscribed:
+            asyncio.run_coroutine_threadsafe(self._send_control_response(payload), loop)
+        return True
+
     def _run_thread(self) -> None:
         try:
             asyncio.run(self._run())
@@ -117,6 +134,7 @@ class BleShotPublisher:
                 self._stop_event = None
                 self._server = None
                 self._subscribed = False
+                self._control_send_lock = None
 
     async def _run(self) -> None:
         # Bless is an optional dependency and must not affect non-BLE installs.
@@ -352,6 +370,13 @@ class BleShotPublisher:
         return response
 
     async def _send_control_response(self, payload: bytes) -> None:
+        if self._control_send_lock is None:
+            self._control_send_lock = asyncio.Lock()
+        async with self._control_send_lock:
+            await self._send_control_payload(payload)
+
+    async def _send_control_payload(self, payload: bytes) -> None:
+        """Send one complete control message without interleaving fragments."""
         with self._state_lock:
             server = self._server
             subscribed = self._subscribed

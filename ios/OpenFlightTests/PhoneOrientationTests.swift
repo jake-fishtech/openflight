@@ -228,6 +228,18 @@ final class PhoneOrientationTests: XCTestCase {
         XCTAssertEqual(payload["club"] as? String, "7-iron")
     }
 
+    func testBluetoothCurrentClubCommandUsesSharedControlEnvelope() throws {
+        let command = try BluetoothClubCommand.encodeCurrent(requestID: "club-current-1")
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: command) as? [String: Any]
+        )
+
+        XCTAssertEqual(object["schema_version"] as? Int, 1)
+        XCTAssertEqual(object["type"] as? String, "get_club")
+        XCTAssertEqual(object["request_id"] as? String, "club-current-1")
+        XCTAssertEqual((object["payload"] as? [String: Any])?.count, 0)
+    }
+
     func testWiFiClubRequestUsesClubEndpoint() throws {
         let request = try ClubSelectionClient.request(
             host: "raspberrypi.local",
@@ -241,5 +253,13 @@ final class PhoneOrientationTests: XCTestCase {
         XCTAssertEqual(request.url?.absoluteString, "http://raspberrypi.local:8080/api/club")
         XCTAssertEqual(request.httpMethod, "POST")
         XCTAssertEqual(object["club"] as? String, "pw")
+    }
+
+    func testWiFiCurrentClubRequestReadsClubEndpoint() throws {
+        let request = try ClubSelectionClient.currentRequest(host: "raspberrypi.local")
+
+        XCTAssertEqual(request.url?.absoluteString, "http://raspberrypi.local:8080/api/club")
+        XCTAssertEqual(request.httpMethod, "GET")
+        XCTAssertNil(request.httpBody)
     }
 }

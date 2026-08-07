@@ -43,12 +43,13 @@ final class WiFiShotClient: ObservableObject {
 
     @Published private(set) var state: ConnectionState = .idle
     @Published private(set) var shotHistory = ShotHistory()
+    @Published private(set) var activeClub: GolfClub?
 
     var latestShot: ShotEvent? { shotHistory.latestShot }
 
     private let session: URLSession
     private var streamTask: Task<Void, Never>?
-    private var parser = SSEEventParser()
+    private var parser = SSEByteStreamParser()
     private var decoder = ShotEventDecoder()
 
     init(session: URLSession = .shared) {
@@ -111,12 +112,28 @@ final class WiFiShotClient: ObservableObject {
         streamTask = nil
         parser.reset()
         decoder.reset()
+        activeClub = nil
         state = .idle
     }
 
     /// Handles one parsed event. Separate from the network loop so delivery and
     /// de-duplication can be tested without a server.
     func receive(_ event: SSEEvent) {
+        if event.name == "club_changed" {
+            do {
+                let update = try JSONDecoder().decode(
+                    ClubStateEvent.self,
+                    from: Data(event.data.utf8)
+                )
+                guard update.schemaVersion == 1, update.type == "club_changed" else {
+                    throw BluetoothControlError.invalidResponse
+                }
+                activeClub = update.club
+            } catch {
+                state = .error(error.localizedDescription)
+            }
+            return
+        }
         guard event.name == nil || event.name == "shot" else { return }
         do {
             guard let shot = try decoder.decode(Data(event.data.utf8)) else { return }
@@ -157,9 +174,9 @@ final class WiFiShotClient: ObservableObject {
         }
         state = .connected
 
-        for try await line in bytes.lines {
+        for try await byte in bytes {
             guard !Task.isCancelled else { return }
-            if let event = parser.append(line: line) {
+            if let event = parser.append(byte: byte) {
                 receive(event)
             }
         }

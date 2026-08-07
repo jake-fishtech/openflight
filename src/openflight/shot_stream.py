@@ -16,7 +16,7 @@ from typing import Iterator, Mapping
 
 # The wire payload is the same versioned V1 shot event the BLE transport sends,
 # so both transports are validated against one contract and one test fixture.
-from .ble.protocol import encode_shot_event
+from .ble.protocol import encode_club_event, encode_shot_event
 
 logger = logging.getLogger(__name__)
 
@@ -33,13 +33,25 @@ class ShotStreamFull(RuntimeError):
     """Raised when the broker already serves the maximum number of clients."""
 
 
-def format_event(payload: bytes) -> str:
-    """Frame one encoded shot event as an SSE ``shot`` message.
+class StreamEvent(bytes):
+    """Encoded JSON carrying its SSE name while remaining bytes-compatible."""
+
+    name: str
+
+    def __new__(cls, name: str, payload: bytes):
+        event = super().__new__(cls, payload)
+        event.name = name
+        return event
+
+
+def format_event(event: StreamEvent | bytes) -> str:
+    """Frame one encoded event for the SSE wire protocol.
 
     ``encode_shot_event`` emits compact single-line JSON, so the payload never
     needs to be split across multiple ``data:`` lines.
     """
-    return f"event: shot\ndata: {payload.decode('utf-8')}\n\n"
+    name = event.name if isinstance(event, StreamEvent) else "shot"
+    return f"event: {name}\ndata: {event.decode('utf-8')}\n\n"
 
 
 class ShotStreamBroker:
@@ -64,7 +76,7 @@ class ShotStreamBroker:
         self.max_subscribers = max_subscribers
 
         self._lock = threading.Lock()
-        self._subscribers: list[queue.Queue[bytes]] = []
+        self._subscribers: list[queue.Queue[StreamEvent]] = []
         self._latest_payload: bytes | None = None
 
     @property
@@ -84,24 +96,39 @@ class ShotStreamBroker:
         with self._lock:
             self._latest_payload = payload
             subscribers = list(self._subscribers)
+        event = StreamEvent("shot", payload)
         for subscriber in subscribers:
-            self._offer(subscriber, payload)
+            self._offer(subscriber, event)
         return True
 
-    def subscribe(self) -> queue.Queue[bytes]:
+    def publish_club(self, club: str) -> bool:
+        """Broadcast an authoritative club change to every Wi-Fi subscriber."""
+        try:
+            event = StreamEvent("club_changed", encode_club_event(club))
+        except (TypeError, ValueError):
+            logger.warning("[STREAM] Failed to encode club payload", exc_info=True)
+            return False
+
+        with self._lock:
+            subscribers = list(self._subscribers)
+        for subscriber in subscribers:
+            self._offer(subscriber, event)
+        return True
+
+    def subscribe(self) -> queue.Queue[StreamEvent]:
         """Register a subscriber, seeded with the latest shot for replay."""
         with self._lock:
             if len(self._subscribers) >= self.max_subscribers:
                 raise ShotStreamFull(f"Shot stream already has {self.max_subscribers} clients")
-            subscriber: queue.Queue[bytes] = queue.Queue(maxsize=self.queue_size)
+            subscriber: queue.Queue[StreamEvent] = queue.Queue(maxsize=self.queue_size)
             if self._latest_payload is not None:
-                subscriber.put_nowait(self._latest_payload)
+                subscriber.put_nowait(StreamEvent("shot", self._latest_payload))
             self._subscribers.append(subscriber)
             count = len(self._subscribers)
         logger.info("[STREAM] Client subscribed (%d streaming)", count)
         return subscriber
 
-    def unsubscribe(self, subscriber: queue.Queue[bytes]) -> None:
+    def unsubscribe(self, subscriber: queue.Queue[StreamEvent]) -> None:
         """Drop a subscriber. Unsubscribing twice is not an error."""
         with self._lock:
             if subscriber not in self._subscribers:
@@ -110,7 +137,7 @@ class ShotStreamBroker:
             count = len(self._subscribers)
         logger.info("[STREAM] Client unsubscribed (%d streaming)", count)
 
-    def frames(self, subscriber: queue.Queue[bytes]) -> Iterator[str]:
+    def frames(self, subscriber: queue.Queue[StreamEvent]) -> Iterator[str]:
         """Yield SSE frames for an already-registered subscriber.
 
         Registration is deliberately not folded in here: a generator body does
@@ -125,18 +152,18 @@ class ShotStreamBroker:
             yield HEARTBEAT_FRAME
             while True:
                 try:
-                    payload = subscriber.get(timeout=self.heartbeat_interval_s)
+                    event = subscriber.get(timeout=self.heartbeat_interval_s)
                 except queue.Empty:
                     yield HEARTBEAT_FRAME
                     continue
-                yield format_event(payload)
+                yield format_event(event)
         finally:
             self.unsubscribe(subscriber)
 
-    def _offer(self, subscriber: queue.Queue[bytes], payload: bytes) -> None:
-        """Queue a payload, dropping the oldest unsent shot when full."""
+    def _offer(self, subscriber: queue.Queue[StreamEvent], event: StreamEvent) -> None:
+        """Queue an event, dropping the oldest unsent event when full."""
         try:
-            subscriber.put_nowait(payload)
+            subscriber.put_nowait(event)
             return
         except queue.Full:
             pass
@@ -148,6 +175,6 @@ class ShotStreamBroker:
             pass
 
         try:
-            subscriber.put_nowait(payload)
+            subscriber.put_nowait(event)
         except queue.Full:
             logger.warning("[STREAM] Delivery queue still full; dropped shot")

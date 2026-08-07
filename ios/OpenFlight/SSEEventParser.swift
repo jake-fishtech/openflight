@@ -7,16 +7,16 @@ struct SSEEvent: Equatable {
 
 /// Incremental parser for the subset of Server-Sent Events OpenFlight uses:
 /// `event:` and `data:` fields, comment lines used as heartbeats, and a blank
-/// line to dispatch. Fed one line at a time so it can be driven by
-/// `URLSession.AsyncBytes.lines` in the client and by literals in tests.
+/// line to dispatch. Fed one complete line at a time by `SSEByteStreamParser`
+/// and by literals in tests.
 struct SSEEventParser {
     private var eventName: String?
     private var dataLines: [String] = []
 
     /// Feeds one line, returning an event when that line completes one.
     mutating func append(line: String) -> SSEEvent? {
-        // AsyncLineSequence strips the newline but a CRLF stream can leave the
-        // carriage return behind.
+        // The byte adapter strips LF, but a CRLF stream leaves the carriage
+        // return behind.
         let line = line.hasSuffix("\r") ? String(line.dropLast()) : line
 
         if line.isEmpty {
@@ -66,5 +66,31 @@ struct SSEEventParser {
             value = value.dropFirst()
         }
         return (field, String(value))
+    }
+}
+
+/// Converts raw response bytes into SSE lines without losing empty lines.
+///
+/// Foundation's `AsyncBytes.lines` omits the empty line separating SSE events,
+/// so feeding that sequence directly into `SSEEventParser` leaves every event
+/// buffered indefinitely. This adapter retains that protocol-significant line.
+struct SSEByteStreamParser {
+    private var lineBytes: [UInt8] = []
+    private var eventParser = SSEEventParser()
+
+    mutating func append(byte: UInt8) -> SSEEvent? {
+        guard byte == 0x0A else {
+            lineBytes.append(byte)
+            return nil
+        }
+
+        let line = String(decoding: lineBytes, as: UTF8.self)
+        lineBytes.removeAll(keepingCapacity: true)
+        return eventParser.append(line: line)
+    }
+
+    mutating func reset() {
+        lineBytes.removeAll(keepingCapacity: true)
+        eventParser.reset()
     }
 }

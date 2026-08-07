@@ -59,6 +59,19 @@ final class BluetoothManagerTests: XCTestCase {
         XCTAssertEqual(manager.latestShot?.ballSpeedMPH, 151.4)
         XCTAssertEqual(manager.shotHistory.shots.count, 1)
     }
+
+    func testReceiveControlPublishesUnsolicitedClubChange() throws {
+        let manager = BluetoothManager(central: FakeCentral(state: .poweredOn))
+        let payload = Data(
+            #"{"schema_version":1,"type":"club_changed","club":"5-wood"}"#.utf8
+        )
+
+        for frame in makeBLEFrames(payload, sequence: 12) {
+            manager.receiveControl(frame)
+        }
+
+        XCTAssertEqual(manager.activeClub, .wood5)
+    }
 }
 
 private final class FakeCentral: CentralManaging {

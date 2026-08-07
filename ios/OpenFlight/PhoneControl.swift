@@ -68,6 +68,8 @@ private struct ClubPayload: Codable {
     let club: GolfClub
 }
 
+private struct EmptyControlPayload: Encodable {}
+
 enum BluetoothClubCommand {
     static func encode(club: GolfClub, requestID: String) throws -> Data {
         try JSONEncoder().encode(
@@ -78,11 +80,33 @@ enum BluetoothClubCommand {
             )
         )
     }
+
+    static func encodeCurrent(requestID: String) throws -> Data {
+        try JSONEncoder().encode(
+            BluetoothControlEnvelope(
+                type: "get_club",
+                requestID: requestID,
+                payload: EmptyControlPayload()
+            )
+        )
+    }
 }
 
 struct ClubSelectionResponse: Decodable, Equatable {
     let status: String
     let club: GolfClub
+}
+
+struct ClubStateEvent: Decodable, Equatable {
+    let schemaVersion: Int
+    let type: String
+    let club: GolfClub
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case type
+        case club
+    }
 }
 
 final class ClubSelectionClient {
@@ -107,8 +131,30 @@ final class ClubSelectionClient {
         return request
     }
 
+    static func currentRequest(host: String) throws -> URLRequest {
+        guard let url = WiFiShotClient.endpointURL(host: host, path: path) else {
+            throw RadarCalibrationClientError.invalidHost(host)
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 10
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        return request
+    }
+
     func submit(host: String, club: GolfClub) async throws -> ClubSelectionResponse {
         let request = try Self.request(host: host, club: club)
+        let (data, response) = try await session.data(for: request)
+        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard statusCode == 200 else {
+            let message = (try? JSONDecoder().decode(PhoneControlServerError.self, from: data))?.error
+            throw RadarCalibrationClientError.unexpectedStatus(statusCode, message)
+        }
+        return try JSONDecoder().decode(ClubSelectionResponse.self, from: data)
+    }
+
+    func current(host: String) async throws -> ClubSelectionResponse {
+        let request = try Self.currentRequest(host: host)
         let (data, response) = try await session.data(for: request)
         let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard statusCode == 200 else {

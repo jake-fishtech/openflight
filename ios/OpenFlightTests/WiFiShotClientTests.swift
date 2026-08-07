@@ -64,6 +64,26 @@ final class WiFiShotClientTests: XCTestCase {
         withExtendedLifetime(cancellable) {}
     }
 
+    func testRawSSEBytesPublishShotAfterHeartbeat() throws {
+        let client = WiFiShotClient()
+        let payload = try sharedShotFixture()
+        let compactPayload = try JSONSerialization.data(
+            withJSONObject: JSONSerialization.jsonObject(with: payload)
+        )
+        let wireStream =
+            ": ping\n\nevent: shot\ndata: \(String(decoding: compactPayload, as: UTF8.self))\n\n"
+        var parser = SSEByteStreamParser()
+
+        for byte in wireStream.utf8 {
+            if let event = parser.append(byte: byte) {
+                client.receive(event)
+            }
+        }
+
+        XCTAssertEqual(client.latestShot?.ballSpeedMPH, 151.4)
+        XCTAssertEqual(client.shotHistory.shots.count, 1)
+    }
+
     func testReceiveIgnoresReplayWithSameEventID() throws {
         let client = WiFiShotClient()
         let original = try sharedShotFixture()
@@ -88,6 +108,20 @@ final class WiFiShotClientTests: XCTestCase {
 
         XCTAssertNil(client.latestShot)
         XCTAssertEqual(client.state, .idle)
+    }
+
+    func testReceivePublishesClubChanges() {
+        let client = WiFiShotClient()
+
+        client.receive(
+            SSEEvent(
+                name: "club_changed",
+                data: #"{"club":"3-wood","schema_version":1,"type":"club_changed"}"#
+            )
+        )
+
+        XCTAssertEqual(client.activeClub, .wood3)
+        XCTAssertNil(client.latestShot)
     }
 
     func testUnsupportedSchemaSurfacesAsRetryableError() throws {

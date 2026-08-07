@@ -276,3 +276,28 @@ def test_control_write_dispatches_club_selection_command():
         }
 
     asyncio.run(run())
+
+
+def test_publish_club_notifies_connected_clients_as_unsolicited_state():
+    async def run():
+        publisher = BleShotPublisher(fragment_interval_s=0)
+        publisher._loop = asyncio.get_running_loop()  # pylint: disable=protected-access
+        publisher._server = _ControlServer()  # pylint: disable=protected-access
+        publisher._subscribed = True  # pylint: disable=protected-access
+
+        assert publisher.publish_club("3-wood")
+
+        for _ in range(100):
+            if publisher._server.notifications:  # pylint: disable=protected-access
+                break
+            await asyncio.sleep(0.01)
+
+        updates = publisher._server.notifications  # pylint: disable=protected-access
+        payload = json.loads(reassemble_fragments(item[2] for item in updates))
+        assert payload == {
+            "schema_version": 1,
+            "type": "club_changed",
+            "club": "3-wood",
+        }
+
+    asyncio.run(run())

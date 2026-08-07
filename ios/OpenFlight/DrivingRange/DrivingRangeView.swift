@@ -2,6 +2,11 @@ import SwiftUI
 
 struct DrivingRangeView: View {
     let latestShot: ShotEvent?
+    let selectedClub: GolfClub
+    let isChangingClub: Bool
+    let clubSelectionEnabled: Bool
+    let clubError: String?
+    let onSelectClub: (GolfClub) -> Void
     private let autoplayShot: Bool
 
     @Environment(\.dismiss) private var dismiss
@@ -9,8 +14,21 @@ struct DrivingRangeView: View {
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var viewModel: DrivingRangeViewModel
 
-    init(latestShot: ShotEvent?, autoplayShot: Bool = false) {
+    init(
+        latestShot: ShotEvent?,
+        selectedClub: GolfClub = .driver,
+        isChangingClub: Bool = false,
+        clubSelectionEnabled: Bool = true,
+        clubError: String? = nil,
+        onSelectClub: @escaping (GolfClub) -> Void = { _ in },
+        autoplayShot: Bool = false
+    ) {
         self.latestShot = latestShot
+        self.selectedClub = selectedClub
+        self.isChangingClub = isChangingClub
+        self.clubSelectionEnabled = clubSelectionEnabled
+        self.clubError = clubError
+        self.onSelectClub = onSelectClub
         self.autoplayShot = autoplayShot
         _viewModel = StateObject(
             wrappedValue: DrivingRangeViewModel(currentShot: latestShot)
@@ -30,7 +48,7 @@ struct DrivingRangeView: View {
                 .ignoresSafeArea()
 
                 LinearGradient(
-                    colors: [.black.opacity(0.38), .clear, .black.opacity(0.48)],
+                    colors: [.black.opacity(0.38), .clear, .black.opacity(0.60)],
                     startPoint: .top,
                     endPoint: .bottom
                 )
@@ -41,7 +59,12 @@ struct DrivingRangeView: View {
                     shot: viewModel.displayedShot,
                     trajectory: viewModel.activeTrajectory,
                     phase: viewModel.phase,
-                    isLandscape: isLandscape
+                    isLandscape: isLandscape,
+                    selectedClub: selectedClub,
+                    isChangingClub: isChangingClub,
+                    clubSelectionEnabled: clubSelectionEnabled,
+                    clubError: clubError,
+                    onSelectClub: onSelectClub
                 )
 
                 if viewModel.displayedShot == nil {

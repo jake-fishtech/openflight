@@ -13,6 +13,11 @@ struct RangeMetricsOverlay: View {
     let trajectory: FlightTrajectory?
     let phase: DrivingRangeViewModel.Phase
     let isLandscape: Bool
+    let selectedClub: GolfClub
+    let isChangingClub: Bool
+    let clubSelectionEnabled: Bool
+    let clubError: String?
+    let onSelectClub: (GolfClub) -> Void
 
     var body: some View {
         VStack(spacing: 12) {
@@ -23,7 +28,6 @@ struct RangeMetricsOverlay: View {
         .padding(.horizontal, isLandscape ? 28 : 16)
         .padding(.top, isLandscape ? 16 : 72)
         .padding(.bottom, 14)
-        .allowsHitTesting(false)
     }
 
     private var primaryMetrics: some View {
@@ -46,6 +50,15 @@ struct RangeMetricsOverlay: View {
 
     private var secondaryMetrics: some View {
         VStack(spacing: 8) {
+            if let clubError {
+                Label(clubError, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 6)
+                    .background(.black.opacity(0.64), in: Capsule())
+            }
+
             if trajectory?.provenance.usesEstimatedFlight == true {
                 Label("Estimated flight uses club defaults", systemImage: "wand.and.stars")
                     .font(.caption.weight(.semibold))
@@ -58,6 +71,7 @@ struct RangeMetricsOverlay: View {
             let metrics = detailMetrics
             if isLandscape {
                 HStack(spacing: 8) {
+                    clubMetric
                     ForEach(metrics) { metric in
                         RangeDetailMetric(metric: metric)
                     }
@@ -67,6 +81,7 @@ struct RangeMetricsOverlay: View {
                     columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 2),
                     spacing: 8
                 ) {
+                    clubMetric
                     ForEach(metrics) { metric in
                         RangeDetailMetric(metric: metric)
                     }
@@ -77,11 +92,6 @@ struct RangeMetricsOverlay: View {
 
     private var detailMetrics: [RangeMetricValue] {
         [
-            RangeMetricValue(
-                title: "CLUB",
-                value: shot?.displayClub ?? "—",
-                unit: ""
-            ),
             RangeMetricValue(
                 title: "CLUB SPEED",
                 value: ShotMetricFormatter.number(shot?.clubSpeedMPH, decimals: 1),
@@ -118,6 +128,51 @@ struct RangeMetricsOverlay: View {
                 unit: "°"
             ),
         ]
+    }
+
+    private var clubMetric: some View {
+        ClubSelectionMenu(
+            selectedClub: selectedClub,
+            isChanging: isChangingClub,
+            isEnabled: clubSelectionEnabled,
+            onSelect: onSelectClub
+        ) {
+            HStack(spacing: 5) {
+                VStack(spacing: 2) {
+                    Text("NEXT CLUB")
+                        .font(.system(size: 9, weight: .bold))
+                        .tracking(0.8)
+                        .foregroundStyle(.white.opacity(0.68))
+                        .lineLimit(1)
+                    Text(selectedClub.displayName)
+                        .font(.subheadline.weight(.bold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.65)
+                }
+                .frame(maxWidth: .infinity)
+
+                if isChangingClub {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(.green)
+                } else {
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(.green)
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 45)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(.black.opacity(0.58), in: RoundedRectangle(cornerRadius: 12))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(.green.opacity(0.48), lineWidth: 1)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Club for next shot, \(selectedClub.displayName)")
+        .accessibilityIdentifier("range.clubSelector")
     }
 }
 
@@ -197,4 +252,3 @@ private struct RangeDetailMetric: View {
         }
     }
 }
-
