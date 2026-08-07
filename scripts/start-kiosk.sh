@@ -13,6 +13,7 @@ HOST="localhost"
 RADAR_PORT=""
 OPS_BAUD=""
 MOCK_MODE=false
+MOCK_SWING_SPEED=false
 RADAR_LOG=false
 DEBUG_MODE=false
 NO_CAMERA=true  # Camera disabled by default (K-LD7 radar handles angle)
@@ -37,6 +38,8 @@ IWR6843_TX_ORDER=""
 IWR6843_CAPTURE_TIMEOUT=""
 IWR6843_OUTPUT_DIR=""
 IWR6843_AZIMUTH_OFFSET=""
+INCLINOMETER=false
+INCLINOMETER_ZERO_OFFSET=""
 KLD7=false
 KLD7_PORT=""
 KLD7_ANGLE_OFFSET=""
@@ -62,6 +65,15 @@ BALLISTICS=false
 SIM=false
 CALCULATED_SPIN=false
 BLE=false
+SWING_SPEED=false
+SWING_SPEED_THRESHOLD=""
+SWING_SPEED_MAX=""
+SWING_SPEED_MIN_READINGS=""
+SWING_SPEED_SINGLE_PEAK=""
+SWING_SPEED_NUM_REPORTS=""
+SWING_SPEED_END_MS=""
+SWING_SPEED_COOLDOWN_MS=""
+SWING_SPEED_REJECTED_COOLDOWN_MS=""
 
 # Buffer split presets (pre/post trigger segments out of 32 total)
 # At 20ksps: each segment = 6.4ms, total buffer = 204.8ms
@@ -84,6 +96,11 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --mock|-m)
             MOCK_MODE=true
+            shift
+            ;;
+        --mock-swing-speed)
+            MOCK_SWING_SPEED=true
+            SWING_SPEED=true
             shift
             ;;
         --radar-log)
@@ -184,6 +201,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --iwr6843-azimuth-offset-deg)
             IWR6843_AZIMUTH_OFFSET="$2"
+            shift 2
+            ;;
+        --inclinometer)
+            INCLINOMETER=true
+            shift
+            ;;
+        --inclinometer-zero-offset)
+            INCLINOMETER_ZERO_OFFSET="$2"
             shift 2
             ;;
         --kld7)
@@ -289,6 +314,42 @@ while [[ $# -gt 0 ]]; do
         --ble)
             BLE=true
             shift
+            ;;
+        --swing-speed)
+            SWING_SPEED=true
+            shift
+            ;;
+        --swing-speed-threshold)
+            SWING_SPEED_THRESHOLD="$2"
+            shift 2
+            ;;
+        --swing-speed-max)
+            SWING_SPEED_MAX="$2"
+            shift 2
+            ;;
+        --swing-speed-min-readings)
+            SWING_SPEED_MIN_READINGS="$2"
+            shift 2
+            ;;
+        --swing-speed-single-peak)
+            SWING_SPEED_SINGLE_PEAK="$2"
+            shift 2
+            ;;
+        --swing-speed-num-reports)
+            SWING_SPEED_NUM_REPORTS="$2"
+            shift 2
+            ;;
+        --swing-speed-end-ms)
+            SWING_SPEED_END_MS="$2"
+            shift 2
+            ;;
+        --swing-speed-cooldown-ms)
+            SWING_SPEED_COOLDOWN_MS="$2"
+            shift 2
+            ;;
+        --swing-speed-rejected-cooldown-ms)
+            SWING_SPEED_REJECTED_COOLDOWN_MS="$2"
+            shift 2
             ;;
         --radar-port|--ops-port)
             RADAR_PORT="$2"
@@ -406,6 +467,10 @@ cd "$PROJECT_DIR"
 # Build server command
 SERVER_CMD="openflight-server --web-port $PORT"
 
+if [ "$MOCK_MODE" = true ] && [ "$SWING_SPEED" = true ]; then
+    MOCK_SWING_SPEED=true
+fi
+
 if [ -n "$RADAR_PORT" ]; then
     SERVER_CMD="$SERVER_CMD --port $RADAR_PORT"
 fi
@@ -414,7 +479,9 @@ if [ -n "$OPS_BAUD" ]; then
     SERVER_CMD="$SERVER_CMD --ops-baud $OPS_BAUD"
 fi
 
-if [ "$MOCK_MODE" = true ]; then
+if [ "$MOCK_SWING_SPEED" = true ]; then
+    SERVER_CMD="$SERVER_CMD --mock-swing-speed"
+elif [ "$MOCK_MODE" = true ]; then
     SERVER_CMD="$SERVER_CMD --mock"
 fi
 
@@ -447,11 +514,47 @@ if [ "$BLE" = true ]; then
     SERVER_CMD="$SERVER_CMD --ble"
 fi
 
-if [ -n "$TRIGGER" ]; then
+if [ "$SWING_SPEED" = true ] && [ "$MOCK_SWING_SPEED" != true ]; then
+    SERVER_CMD="$SERVER_CMD --swing-speed"
+fi
+
+if [ -n "$SWING_SPEED_THRESHOLD" ]; then
+    SERVER_CMD="$SERVER_CMD --swing-speed-threshold $SWING_SPEED_THRESHOLD"
+fi
+
+if [ -n "$SWING_SPEED_MAX" ]; then
+    SERVER_CMD="$SERVER_CMD --swing-speed-max $SWING_SPEED_MAX"
+fi
+
+if [ -n "$SWING_SPEED_MIN_READINGS" ]; then
+    SERVER_CMD="$SERVER_CMD --swing-speed-min-readings $SWING_SPEED_MIN_READINGS"
+fi
+
+if [ -n "$SWING_SPEED_SINGLE_PEAK" ]; then
+    SERVER_CMD="$SERVER_CMD --swing-speed-single-peak $SWING_SPEED_SINGLE_PEAK"
+fi
+
+if [ -n "$SWING_SPEED_NUM_REPORTS" ]; then
+    SERVER_CMD="$SERVER_CMD --swing-speed-num-reports $SWING_SPEED_NUM_REPORTS"
+fi
+
+if [ -n "$SWING_SPEED_END_MS" ]; then
+    SERVER_CMD="$SERVER_CMD --swing-speed-end-ms $SWING_SPEED_END_MS"
+fi
+
+if [ -n "$SWING_SPEED_COOLDOWN_MS" ]; then
+    SERVER_CMD="$SERVER_CMD --swing-speed-cooldown-ms $SWING_SPEED_COOLDOWN_MS"
+fi
+
+if [ -n "$SWING_SPEED_REJECTED_COOLDOWN_MS" ]; then
+    SERVER_CMD="$SERVER_CMD --swing-speed-rejected-cooldown-ms $SWING_SPEED_REJECTED_COOLDOWN_MS"
+fi
+
+if [ -n "$TRIGGER" ] && [ "$SWING_SPEED" != true ]; then
     SERVER_CMD="$SERVER_CMD --trigger $TRIGGER"
 fi
 
-if [ -n "$SOUND_PRE_TRIGGER" ]; then
+if [ -n "$SOUND_PRE_TRIGGER" ] && [ "$SWING_SPEED" != true ]; then
     SERVER_CMD="$SERVER_CMD --sound-pre-trigger $SOUND_PRE_TRIGGER"
 fi
 
@@ -478,6 +581,11 @@ if [ "$IWR6843" = true ]; then
     [ -n "$IWR6843_CAPTURE_TIMEOUT" ] && SERVER_CMD="$SERVER_CMD --iwr6843-capture-timeout $IWR6843_CAPTURE_TIMEOUT"
     [ -n "$IWR6843_OUTPUT_DIR" ] && SERVER_CMD="$SERVER_CMD --iwr6843-output-dir $IWR6843_OUTPUT_DIR"
     [ -n "$IWR6843_AZIMUTH_OFFSET" ] && SERVER_CMD="$SERVER_CMD --iwr6843-azimuth-offset-deg $IWR6843_AZIMUTH_OFFSET"
+fi
+
+if [ "$INCLINOMETER" = true ]; then
+    SERVER_CMD="$SERVER_CMD --inclinometer"
+    [ -n "$INCLINOMETER_ZERO_OFFSET" ] && SERVER_CMD="$SERVER_CMD --inclinometer-zero-offset $INCLINOMETER_ZERO_OFFSET"
 fi
 
 if [ "$EXPERIMENTAL_KLD7_RAW_RADC_LOGGING" = true ]; then

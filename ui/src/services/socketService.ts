@@ -3,8 +3,16 @@ import { useSystemStore } from '../stores/useSystemStore';
 import { useShotStore } from '../stores/useShotStore';
 import { useCameraStore, type CameraStatus } from '../stores/useCameraStore';
 import { useDebugStore } from '../stores/useDebugStore';
-import type { Shot, SessionStats, SessionState, TriggerDiagnostic, TriggerStatus } from '../types/shot';
+import {
+  isSwingSpeedShot,
+  type Shot,
+  type SessionStats,
+  type SessionState,
+  type TriggerDiagnostic,
+  type TriggerStatus,
+} from '../types/shot';
 import type { DebugReading, RadarConfig, DebugShotLog, SimShotInfo, SimStatus } from '../types/socket';
+import { playSwingCapturedCue } from '../utils/audioCue';
 import { getServerOrigin } from '../utils/serverOrigin';
 
 const SOCKET_URL = getServerOrigin();
@@ -37,6 +45,7 @@ class SocketService {
       useSystemStore.getState().setConnected(true);
       this.socket?.emit('get_session');
       this.socket?.emit('get_trigger_status');
+      this.socket?.emit('get_radar_config');
     });
 
     this.socket.on('disconnect', () => {
@@ -47,7 +56,16 @@ class SocketService {
     this.socket.on('shot', (data: { shot: Shot; stats: SessionStats }) => {
       // Need to get latest state of addShot to prevent stale closures
       useShotStore.getState().addShot(data.shot);
+      if (isSwingSpeedShot(data.shot)) {
+        playSwingCapturedCue();
+      }
     });
+
+    // Swing-speed mode also emits a normal `shot` event, handled above, so the
+    // rep is already recorded. This listener is registered without a payload to
+    // document that `swing_speed` is deliberately ignored here rather than
+    // forgotten -- handling it too would double-count the rep.
+    this.socket.on('swing_speed', () => {});
 
     this.socket.on('sim_status', (data: SimStatus) => {
       useSystemStore.getState().setSimStatus(data);
@@ -69,6 +87,10 @@ class SocketService {
       useSystemStore.getState().setServerClub(data.club);
     });
 
+    this.socket.on('player_changed', (data: { player_name: string }) => {
+      useSystemStore.getState().setServerPlayerName(data.player_name);
+    });
+
     this.socket.on(
       'session_state',
       (
@@ -79,6 +101,7 @@ class SocketService {
           camera_enabled?: boolean;
           camera_streaming?: boolean;
           ball_detected?: boolean;
+          player_name?: string;
         }
       ) => {
         console.log('Session state received:', data);
@@ -91,6 +114,9 @@ class SocketService {
         }
         if (data.debug_mode !== undefined) {
           systemStore.setDebugMode(data.debug_mode);
+        }
+        if (data.player_name !== undefined) {
+          systemStore.setServerPlayerName(data.player_name);
         }
 
         // Update camera status from session state
@@ -148,6 +174,13 @@ class SocketService {
     this.socket.on('trigger_status', (data: TriggerStatus) => {
       useDebugStore.getState().setTriggerStatus(data);
     });
+
+    this.socket.on(
+      'cloud_upload_status',
+      (data: { state: 'idle' | 'running' | 'complete' | 'error'; message: string }) => {
+        useSystemStore.getState().setCloudUploadStatus(data.state, data.message);
+      }
+    );
   }
 
   // Emitters
@@ -155,12 +188,29 @@ class SocketService {
     this.socket?.emit('clear_session');
   }
 
+  uploadCloud() {
+    useSystemStore.getState().setCloudUploadStatus('running', 'Uploading...');
+    this.socket?.emit('upload_cloud');
+  }
+
   setClub(club: string) {
     this.socket?.emit('set_club', { club });
   }
 
+  setTrainingImplement(implement: string) {
+    this.socket?.emit('set_training_implement', { implement });
+  }
+
+  setPlayer(playerName: string) {
+    this.socket?.emit('set_player', { player_name: playerName });
+  }
+
   simulateShot() {
     this.socket?.emit('simulate_shot');
+  }
+
+  deleteShot(timestamp: string) {
+    this.socket?.emit('delete_shot', { timestamp });
   }
 
   toggleDebug() {

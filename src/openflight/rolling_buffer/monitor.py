@@ -289,10 +289,16 @@ class RollingBufferMonitor:
         if self.trigger_type != "speed":
             # Get pre_trigger_segments from the trigger if available
             pre_trigger_segments = getattr(self.trigger, "pre_trigger_segments", 12)
-            self.radar.configure_for_rolling_buffer(
-                pre_trigger_segments=pre_trigger_segments,
-                sample_rate_ksps=self.sample_rate_ksps,
-            )
+            if self.trigger_type == "sound":
+                self.radar.prepare_persisted_rolling_buffer(
+                    pre_trigger_segments=pre_trigger_segments,
+                    sample_rate_ksps=self.sample_rate_ksps,
+                )
+            else:
+                self.radar.configure_for_rolling_buffer(
+                    pre_trigger_segments=pre_trigger_segments,
+                    sample_rate_ksps=self.sample_rate_ksps,
+                )
             logger.info(
                 "[MONITOR] Rolling buffer mode configured with S#%d, S=%d",
                 pre_trigger_segments,
@@ -436,6 +442,7 @@ class RollingBufferMonitor:
                             self._current_club,
                         )
                     ),
+                    club_type=self._current_club,
                 )
                 process_ms = (time.time() - process_start) * 1000
                 logger.info("[MONITOR] process_capture: %.1fms", process_ms)

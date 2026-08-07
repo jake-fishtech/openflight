@@ -5,6 +5,7 @@ import { useSystemStore } from './stores/useSystemStore';
 import { useShotStore } from './stores/useShotStore';
 import { useCameraStore } from './stores/useCameraStore';
 import { useDebugStore } from './stores/useDebugStore';
+import { usePlayerStore } from './stores/usePlayerStore';
 import { socketService } from './services/socketService';
 import { ShotDisplay } from './components/ShotDisplay';
 import { StatsView } from './components/StatsView';
@@ -16,8 +17,11 @@ import { SimStatus } from './components/SimStatus';
 import { SimShotBadges } from './components/SimShotBadges';
 import { ClubPicker } from './components/ClubPicker';
 import { ClubSelectScreen } from './components/ClubSelectScreen';
+import { TrainingImplementPicker } from './components/TrainingImplementPicker';
+import { PlayerPicker } from './components/PlayerPicker';
 import { BallDetectionIndicator } from './components/BallDetectionIndicator';
 import { DisplayMode } from './components/DisplayMode';
+import { unlockAudioCue } from './utils/audioCue';
 import {
   useLaunchDaddy,
   LaunchDaddyOverlay,
@@ -85,6 +89,7 @@ function AppContent() {
     }))
   );
   const cameraStatus = useCameraStore((state) => state.cameraStatus);
+  const selectedPlayer = usePlayerStore((state) => state.selectedPlayer);
   const { debugReadings, debugShotLogs, radarConfig, triggerDiagnostics, triggerStatus } = useDebugStore(
     useShallow((state) => ({
       debugReadings: state.debugReadings,
@@ -97,6 +102,7 @@ function AppContent() {
 
   const [currentView, setCurrentView] = useState<View>('live');
   const [selectedClub, setSelectedClub] = useState('driver');
+  const [selectedTrainingImplement, setSelectedTrainingImplement] = useState('driver');
   // Reflect a server-pushed club change (e.g. the club changed in the connected
   // simulator) in the local picker, without echoing back to the server. Done
   // during render (React's "adjust state when an input changes" pattern) rather
@@ -114,6 +120,7 @@ function AppContent() {
   const { isLaunchDaddyMode, isExploding, triggerExplosion, handleSecretTap } = useLaunchDaddy();
   const { unitSystem, setUnitSystem } = useUnitPreference();
   const isDisplayRoute = typeof window !== 'undefined' && window.location.pathname.replace(/\/$/, '') === '/display';
+  const isSwingSpeedMode = triggerStatus.mode === 'swing-speed';
 
   // Trigger explosion when a new shot is detected in Launch Daddy mode
   useEffect(() => {
@@ -123,9 +130,25 @@ function AppContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- shotVersion triggers the effect; isNewShot is only a guard
   }, [shotVersion, isLaunchDaddyMode, triggerExplosion]);
 
+  useEffect(() => {
+    const unlock = () => unlockAudioCue();
+    window.addEventListener('pointerdown', unlock, { once: true });
+    window.addEventListener('keydown', unlock, { once: true });
+
+    return () => {
+      window.removeEventListener('pointerdown', unlock);
+      window.removeEventListener('keydown', unlock);
+    };
+  }, []);
+
   const handleClubChange = (club: string) => {
     setSelectedClub(club);
     socketService.setClub(club);
+  };
+
+  const handleTrainingImplementChange = (implement: string) => {
+    setSelectedTrainingImplement(implement);
+    socketService.setTrainingImplement(implement);
   };
 
   if (isDisplayRoute) {
@@ -188,7 +211,15 @@ function AppContent() {
               KMH/M
             </button>
           </div>
-          <ClubPicker selectedClub={selectedClub} onClubChange={handleClubChange} />
+          <PlayerPicker />
+          {isSwingSpeedMode ? (
+            <TrainingImplementPicker
+              selectedImplement={selectedTrainingImplement}
+              onImplementChange={handleTrainingImplementChange}
+            />
+          ) : (
+            <ClubPicker selectedClub={selectedClub} onClubChange={handleClubChange} />
+          )}
           <BallDetectionIndicator
             available={cameraStatus.available}
             enabled={cameraStatus.enabled}
@@ -283,17 +314,26 @@ function AppContent() {
         {currentView === 'live' && (
           <div className="live-view">
             {isNewShot && <div key={shotVersion} className="shot-flash" />}
-            <ShotDisplay key={shotVersion} shot={latestShot} animate={isNewShot} />
+            <ShotDisplay
+              key={shotVersion}
+              shot={latestShot}
+              shots={shots}
+              animate={isNewShot}
+              activePlayerName={selectedPlayer}
+              activeTrainingImplement={isSwingSpeedMode ? selectedTrainingImplement : undefined}
+            />
             {debugMode && <SimShotBadges latestSimShots={latestSimShots} />}
             {mockMode && (
               <button className="simulate-button" onClick={() => socketService.simulateShot()}>
-                Simulate Shot
+                {isSwingSpeedMode ? 'Simulate Swing' : 'Simulate Shot'}
               </button>
             )}
           </div>
         )}
         {currentView === 'stats' && <StatsView shots={shots} onClearSession={() => socketService.clearSession()} />}
-        {currentView === 'shots' && <ShotList shots={shots} />}
+        {currentView === 'shots' && (
+          <ShotList shots={shots} onDeleteShot={(timestamp) => socketService.deleteShot(timestamp)} />
+        )}
         {currentView === 'camera' && (
           <CameraFeed
             cameraStatus={cameraStatus}

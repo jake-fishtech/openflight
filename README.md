@@ -4,6 +4,9 @@
 </p>
 
 <p align="center">
+  <a href="https://discord.gg/w8hhG4WVMN">
+    <img src="https://img.shields.io/badge/Discord-join%20the%20community-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Join the OpenFlight Discord" />
+  </a>
   <a href="https://buymeacoffee.com/colemangolfs">
     <img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-support-yellow?style=for-the-badge&logo=buy-me-a-coffee&logoColor=white" alt="Buy Me a Coffee" />
   </a>
@@ -103,6 +106,9 @@ scripts/start-kiosk.sh --iwr6843 \
 # With K-LD7 launch-angle geometry defaults (deprecated hardware)
 scripts/start-kiosk.sh --kld7-geometry
 
+# Swing speed training (air swings / speed sticks, no sound trigger)
+scripts/start-kiosk.sh --swing-speed
+
 # Development mode (no hardware)
 scripts/start-kiosk.sh --mock
 
@@ -145,11 +151,28 @@ for details.
 OpenFlight also serves a fullscreen-friendly browser display for tablets, TV browsers, or a Chrome tab cast to Chromecast.
 
 1. Start OpenFlight as usual with `scripts/start-kiosk.sh`.
-2. Find the OpenFlight host IP address on your LAN.
-3. Open `http://<openflight-host-ip>:8080/display` from another laptop, tablet, or TV browser.
+2. Find the OpenFlight host on your LAN — its hostname (see below) or its IP address.
+3. Open `http://<openflight-host>:8080/display` from another laptop, tablet, or TV browser.
 4. For Chromecast, open the display page in Chrome and use Chrome's built-in **Cast** feature to cast the tab.
 
+> **Prefer the hostname over the IP.** Raspberry Pi OS broadcasts its hostname over
+> mDNS (Avahi), so `http://openflight.local:8080/display` keeps working even when the
+> Pi's DHCP lease expires and it comes back on a different address — a bookmarked IP
+> breaks unless you reserved it on your router. Set the name in Raspberry Pi Imager's
+> **Hostname** field when you flash the card; the default is `raspberrypi`, i.e.
+> `raspberrypi.local`. The viewing device has to support mDNS — macOS, iOS, Windows 10+
+> and most Linux desktops do, but some smart-TV browsers don't, so use the IP there.
+
 This is browser/tab casting only. OpenFlight does not include native Cast SDK support yet.
+
+### Swing Speed Training
+
+For air swings and speed-stick training, OpenFlight can use the OPS243-A fast
+speed stream directly instead of waiting for impact audio. Start it with
+`scripts/start-kiosk.sh --swing-speed`; the server emits `swing_speed` events
+with peak club speed, rep duration, reading count, and session stats. See the
+**[Swing Speed Training Guide](docs/swing-speed-training.md)** for setup and
+tuning options.
 
 ## How It Works
 
@@ -280,6 +303,11 @@ openflight/
 └── pyproject.toml
 ```
 
+## Community
+
+Join the **[OpenFlight Discord](https://discord.gg/w8hhG4WVMN)** to ask build
+questions, share results, and follow development.
+
 ## Contributing
 
 Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
@@ -301,6 +329,7 @@ uv run pytest tests/ -v
 - **[Sound Trigger Wiring](docs/sound-trigger-wiring.md)** — How to wire the sound trigger
 - **[Raspberry Pi Setup](docs/raspberry-pi-setup.md)** — Full setup guide
 - **[IWR6843 Operator Guide](docs/iwr6843/README.md)** — Wire, flash, mount, aim, and calibrate the angle radar
+- **[LIS3DH Inclinometer Setup](docs/inclinometer/README.md)**: Add enclosure-level compensation to IWR6843 tilt
 - **[OPS243 USB → GPIO UART Migration](docs/ops243-uart-migration.md)** — Required before adding the IWR6843
 - **[IWR6843 Firmware Developer Guide](firmware/README.md)** — Build the firmware from source (not needed to flash the prebuilt image)
 - **[Simulator Connectors](docs/simulator/README.md)** — Stream shots to GSPro, OpenGolfSim, and others

@@ -220,6 +220,7 @@ class OPS243Radar:
         self._unit = "mph"
         self._json_mode = False
         self._magnitude_enabled = False
+        self._speed_read_buffer = ""
         self.last_hardware_trigger_first_byte_timestamp: Optional[float] = None
         # Most recent OPS-clock -> host-epoch sync (see read_clock_sync).
         self.last_clock_sync: Optional[dict] = None
@@ -1121,6 +1122,56 @@ class OPS243Radar:
             logger.warning("[OPS] Failed to parse reading: %r - %s", line, e)
             return None
 
+    def _parse_readings(self, line: str) -> List[SpeedReading]:
+        """Parse all readings from a radar output line.
+
+        JSON multi-object mode reports arrays ordered by magnitude. For normal
+        launch-monitor trigger detection, _parse_reading() keeps returning the
+        strongest target for backwards compatibility. Swing-speed training needs
+        every candidate so it can choose the fastest club-head-like reflection.
+        """
+        if _show_raw_readings:
+            print(f"[SERIAL] {line!r}")
+
+        try:
+            if self._json_mode and line.startswith("{"):
+                data = json.loads(line)
+                speed_data = data.get("speed", 0)
+                magnitude_data = data.get("magnitude")
+
+                if not isinstance(speed_data, list):
+                    reading = self._parse_reading(line)
+                    return [reading] if reading else []
+
+                readings = []
+                for index, raw_speed in enumerate(speed_data):
+                    speed = float(raw_speed)
+                    if speed > 0:
+                        direction = Direction.INBOUND
+                    else:
+                        direction = Direction.OUTBOUND
+
+                    magnitude = None
+                    if isinstance(magnitude_data, list) and index < len(magnitude_data):
+                        magnitude = float(magnitude_data[index])
+
+                    readings.append(
+                        SpeedReading(
+                            speed=abs(speed),
+                            direction=direction,
+                            magnitude=magnitude,
+                            timestamp=time.time(),
+                            unit=self._unit,
+                        )
+                    )
+                return readings
+
+            reading = self._parse_reading(line)
+            return [reading] if reading else []
+        except (ValueError, json.JSONDecodeError) as e:
+            logger.warning("[OPS] Failed to parse readings: %r - %s", line, e)
+            return []
+
     def save_config(self):
         """Save current configuration to persistent memory."""
         self._send_command("A!")
@@ -1270,6 +1321,60 @@ class OPS243Radar:
         )
         print("[RADAR] Settings saved to persistent memory.")
         print("[RADAR] Power cycle the board (unplug USB, wait 3s, replug).")
+
+    def restore_rolling_buffer_mode(
+        self, pre_trigger_segments: int = 16, sample_rate_ksps: int = 30
+    ):
+        """
+        Restore rolling-buffer mode after a temporary speed-mode session.
+
+        Swing-speed training uses CW speed reporting and sends GS as part of
+        that setup. Before returning the radar to launch-monitor use, put it
+        back into rolling-buffer mode using volatile commands only. Saving with
+        A! is intentionally reserved for the one-time setup path because it
+        writes persistent flash and is not needed for normal mode switching.
+        """
+        if not self.serial or not self.serial.is_open:
+            raise ConnectionError("Not connected to radar")
+
+        logger.info("[OPS] Restoring rolling buffer mode after speed mode...")
+        self.set_units(SpeedUnit.MPH)
+        logger.info("[OPS] Units: MPH")
+        self.set_transmit_power(3)
+        logger.info("[OPS] Transmit power: level 3 (reduced to avoid clipping)")
+        self.enter_rolling_buffer_mode(
+            pre_trigger_segments=pre_trigger_segments,
+            sample_rate_ksps=sample_rate_ksps,
+        )
+        self.serial.reset_input_buffer()
+        logger.info("[OPS] Rolling buffer mode restored for launch-monitor use")
+
+    def prepare_persisted_rolling_buffer(
+        self, pre_trigger_segments: int = 16, sample_rate_ksps: int = 30
+    ):
+        """
+        Prepare a radar that already booted in persisted rolling-buffer mode.
+
+        Do not send GC/A! here. The OPS243-A HOST_INT workaround requires the
+        board to boot in rolling-buffer mode from flash. If swing-speed mode
+        has put the radar into speed-reporting mode, save rolling-buffer mode
+        separately and physically power-cycle the radar before launch mode.
+        """
+        if not self.serial or not self.serial.is_open:
+            raise ConnectionError("Not connected to radar")
+
+        self.set_units(SpeedUnit.MPH)
+        logger.info("[OPS] Units: MPH")
+        self.set_transmit_power(3)
+        logger.info("[OPS] Transmit power: level 3 (reduced to avoid clipping)")
+        self.set_sample_rate(sample_rate_ksps * 1000)
+        logger.info("[OPS] Sample rate: %dksps", sample_rate_ksps)
+        self.rearm_rolling_buffer(pre_trigger_segments=pre_trigger_segments)
+        logger.info(
+            "[OPS] Persisted rolling buffer prepared (S#%d, %dksps)",
+            pre_trigger_segments,
+            sample_rate_ksps,
+        )
 
     def trigger_capture(self, timeout: Optional[float] = None) -> str:
         """
@@ -1578,6 +1683,94 @@ class OPS243Radar:
 
         logger.info("[OPS] Rolling buffer mode configured")
 
+    def configure_for_swing_speed_training(self, min_speed_mph: float = 20, num_reports: int = 1):
+        """
+        Configure the radar for standalone swing-speed training.
+
+        Training streams raw CW speed reports and never captures a rolling
+        buffer. Per AN-010-AD (API Commands, p21) GS selects "CW operation
+        only" -- the documented way out of rolling-buffer mode and the
+        OPS243-A default -- so this path sends GS and never GC/S#n/S!.
+
+        Nothing here writes flash (no A!). The HOST_INT workaround needs the
+        board to *boot* into rolling-buffer mode from persistent memory, so a
+        stray A! in this path would clobber launch mode until the setup script
+        was re-run. Use restore_rolling_buffer_mode() to hand the radar back.
+
+        Deliberately kept separate from configure_for_speed_trigger(): that
+        path tunes the radar to *detect* a swing and immediately hand off to
+        the rolling buffer, so retuning it for the launch monitor must not
+        silently change training measurements. The two configurations are
+        expected to diverge.
+
+        Args:
+            min_speed_mph: Ignore reports below this speed, filtering leg
+                movement and backswing (R>n).
+            num_reports: Speed reports per sample cycle (On). >1 surfaces
+                several candidate reflections so the caller can pick the
+                club head.
+        """
+        if not self.serial or not self.serial.is_open:
+            raise ConnectionError("Not connected to radar")
+
+        logger.info("[OPS] Configuring for swing speed training (CW speed reporting)...")
+
+        # CW mode, then idle while we reconfigure.
+        self._send_command("GS")
+        time.sleep(0.1)
+        logger.info("[OPS] GS: CW mode (standard radar signal processing)")
+
+        self._send_command("PI")
+        time.sleep(0.1)
+
+        self.set_units(SpeedUnit.MPH)
+        logger.info("[OPS] Units: MPH")
+
+        # Max transmit power: the club head is a smaller, less reflective
+        # target than a ball, and there is no rolling-buffer capture to clip.
+        self.set_transmit_power(0)
+        logger.info("[OPS] Transmit power: max (P0)")
+
+        # 30ksps -> 208mph ceiling, above any club head speed (AN-027 Table 1).
+        self.set_sample_rate(30000)
+        time.sleep(0.1)
+        logger.info("[OPS] Sample rate: 30ksps")
+
+        self.set_buffer_size(128)
+        time.sleep(0.1)
+        logger.info("[OPS] Buffer size: 128")
+
+        # X=2 (256-point FFT) trades speed resolution for report rate, keeping
+        # enough reports across the ~100ms of a swing to find its peak.
+        self.set_fft_size(2)
+        time.sleep(0.1)
+        logger.info("[OPS] FFT size: 256 (X=2)")
+
+        # Outbound only: the downswing moves away from a radar placed behind
+        # the player, so R- drops the backswing.
+        self._send_command("R-")
+        time.sleep(0.05)
+        logger.info("[OPS] Direction filter: outbound only (R-)")
+
+        self.set_min_speed_filter(min_speed_mph)
+        time.sleep(0.05)
+        logger.info("[OPS] Min speed filter: %s mph", min_speed_mph)
+
+        self.set_num_reports(num_reports)
+        time.sleep(0.05)
+        logger.info("[OPS] Reports per cycle: %d", num_reports)
+
+        self.enable_json_output(True)
+        self.enable_magnitude_report(True)
+
+        # No inter-report delay.
+        self._send_command("W0")
+        time.sleep(0.05)
+
+        self._send_command("PA")
+        time.sleep(0.1)
+        logger.info("[OPS] Swing speed training mode ready (PA)")
+
     def configure_for_speed_trigger(self):
         """
         Configure radar for fast speed detection to trigger rolling buffer capture.
@@ -1696,25 +1889,56 @@ class OPS243Radar:
             return None
 
         try:
-            # Read available data
+            # Read available data and preserve partial JSON lines for the next poll.
             raw_bytes = self.serial.read(self.serial.in_waiting)
-            line = raw_bytes.decode("ascii", errors="ignore").strip()
+            self._speed_read_buffer += raw_bytes.decode("ascii", errors="ignore")
 
-            if not line:
+            if "\n" not in self._speed_read_buffer and "\r" not in self._speed_read_buffer:
                 return None
 
-            # May have multiple lines - take the last complete one
-            lines = line.split("\n")
+            lines = self._speed_read_buffer.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+            self._speed_read_buffer = lines.pop()
+
+            # May have multiple complete lines - take the last valid one.
             for candidate in reversed(lines):
                 candidate = candidate.strip()
-                if candidate.startswith("{"):
-                    reading = self._parse_reading(candidate)
-                    if reading:
-                        return reading
+                if not candidate:
+                    continue
+                reading = self._parse_reading(candidate)
+                if reading:
+                    return reading
 
             return None
         except Exception:
             return None
+
+    def read_speed_candidates_nonblocking(self) -> List[SpeedReading]:
+        """Non-blocking speed read returning every candidate from complete lines."""
+        if not self.serial or not self.serial.is_open:
+            return []
+
+        if self.serial.in_waiting == 0:
+            return []
+
+        try:
+            raw_bytes = self.serial.read(self.serial.in_waiting)
+            self._speed_read_buffer += raw_bytes.decode("ascii", errors="ignore")
+
+            if "\n" not in self._speed_read_buffer and "\r" not in self._speed_read_buffer:
+                return []
+
+            lines = self._speed_read_buffer.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+            self._speed_read_buffer = lines.pop()
+
+            readings: List[SpeedReading] = []
+            for candidate in lines:
+                candidate = candidate.strip()
+                if candidate:
+                    readings.extend(self._parse_readings(candidate))
+
+            return readings
+        except Exception:
+            return []
 
     def __enter__(self):
         """Context manager entry."""

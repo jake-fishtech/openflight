@@ -15,12 +15,16 @@ from openflight.launch_monitor import ClubType, Shot
 from openflight.ops243 import UART_BAUD_COMMANDS
 from openflight.server import (
     MockLaunchMonitor,
+    MockSwingSpeedMonitor,
     estimate_launch_angle,
     on_shot_detected,
     radar_launch_is_plausible,
     shot_to_dict,
+    swing_speed_to_dict,
+    swing_speed_to_shot_dict,
 )
 from openflight.shot_stream import HEARTBEAT_FRAME, SSE_MIMETYPE, ShotStreamBroker
+from openflight.swing_speed import SwingSpeedEvent
 
 
 class TestShutdownCleanup:
@@ -764,6 +768,7 @@ class TestShotToDict:
         assert result["ball_speed_mph"] == 150.5
         assert result["club_speed_mph"] == 103.2
         assert result["club"] == "driver"
+        assert result["player_name"] == "Player 1"
         assert result["timestamp"] == "2024-01-15T10:30:00"
         assert "estimated_carry_yards" in result
         assert "carry_range" in result
@@ -852,6 +857,331 @@ class TestShotToDict:
         assert result["spin_phase_agreement_pct"] == 2.1
         assert result["spin_phase_confirmed"] is True
         assert result["spin_rejection_reason"] == "SNR too low (2.96, need 3.0)"
+
+
+class TestSwingSpeedMode:
+    """Tests for swing speed training server helpers."""
+
+    def test_swing_speed_to_dict(self):
+        """Swing speed event payloads should be rounded and UI-friendly."""
+        event = SwingSpeedEvent(
+            peak_speed_mph=101.44,
+            timestamp=datetime(2024, 1, 15, 10, 30, 0),
+            duration_ms=347.8,
+            reading_count=9,
+            trigger_speed_mph=32.25,
+            peak_magnitude=42,
+        )
+
+        result = swing_speed_to_dict(event)
+
+        assert result == {
+            "peak_speed_mph": 101.4,
+            "timestamp": "2024-01-15T10:30:00",
+            "duration_ms": 348,
+            "reading_count": 9,
+            "trigger_speed_mph": 32.2,
+            "peak_magnitude": 42,
+            "training_implement": "driver",
+            "training_implement_label": "Driver",
+            "player_name": "Player 1",
+            "unit": "mph",
+            "mode": "swing-speed",
+        }
+
+    def test_swing_speed_to_shot_dict_supports_existing_ui(self):
+        """Swing speed events should also map to the normal shot event shape."""
+        event = SwingSpeedEvent(
+            peak_speed_mph=101.44,
+            timestamp=datetime(2024, 1, 15, 10, 30, 0),
+            duration_ms=347.8,
+            reading_count=9,
+            trigger_speed_mph=32.25,
+            peak_magnitude=42,
+        )
+
+        result = swing_speed_to_shot_dict(event)
+
+        assert result["ball_speed_mph"] == 101.4
+        assert result["club_speed_mph"] == 101.4
+        assert result["club"] == "Driver"
+        assert result["estimated_carry_yards"] == 0
+        assert result["carry_range"] == [0, 0]
+        assert result["mode"] == "swing-speed"
+        assert result["swing_speed_reading_count"] == 9
+        assert result["swing_speed_trigger_mph"] == 32.2
+        assert result["training_implement"] == "driver"
+        assert result["training_implement_label"] == "Driver"
+        assert result["player_name"] == "Player 1"
+
+    def test_set_player_updates_future_swing_speed_payloads(self, monkeypatch):
+        """Selected UI player should be stamped on subsequent swing speed reps."""
+        emitted = []
+        monkeypatch.setattr(server_module, "current_player_name", "Player 1")
+        monkeypatch.setattr(
+            server_module.socketio, "emit", lambda *args, **kwargs: emitted.append(args)
+        )
+
+        server_module.handle_set_player({"player_name": "David"})
+        event = SwingSpeedEvent(
+            peak_speed_mph=101.44,
+            timestamp=datetime(2024, 1, 15, 10, 30, 0),
+            duration_ms=347.8,
+            reading_count=9,
+            trigger_speed_mph=32.25,
+        )
+        server_module.on_swing_speed_detected(event)
+
+        assert server_module.current_player_name == "David"
+        shot_payload = next(payload for name, payload in emitted if name == "shot")
+        assert shot_payload["shot"]["player_name"] == "David"
+
+    def test_start_monitor_uses_swing_speed_monitor(self, monkeypatch):
+        """Swing speed mode should start a club-only monitor and callback."""
+        started = {}
+        session = {}
+
+        class FakeSwingSpeedMonitor:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+                self.radar = SimpleNamespace(baud=57600)
+
+            def connect(self):
+                started["connected"] = True
+
+            def get_radar_info(self):
+                return {"Version": "test"}
+
+            def start(self, event_callback=None, live_callback=None):
+                started["event_callback"] = event_callback
+                started["live_callback"] = live_callback
+
+            def stop(self):
+                started["stopped"] = True
+
+            def disconnect(self):
+                started["disconnected"] = True
+
+        class FakeSessionLogger:
+            def start_session(self, **kwargs):
+                session.update(kwargs)
+
+            def end_session(self):
+                pass
+
+            def log_connection(self, **kwargs):
+                session["connection"] = kwargs
+
+            def log_clock_sync(self, **kwargs):
+                session["clock_sync"] = kwargs
+
+        monkeypatch.setattr(server_module, "monitor", None)
+        monkeypatch.setattr(server_module, "camera", None)
+        monkeypatch.setattr(server_module, "camera_tracker", None)
+        monkeypatch.setattr(server_module, "get_session_logger", lambda: FakeSessionLogger())
+        monkeypatch.setattr(
+            "openflight.swing_speed.SwingSpeedMonitor",
+            FakeSwingSpeedMonitor,
+        )
+
+        server_module.start_monitor(
+            port="/dev/ops",
+            swing_speed_mode=True,
+            swing_speed_kwargs={
+                "trigger_threshold_mph": 35.0,
+                "max_speed_mph": 125.0,
+                "min_readings": 4,
+                "single_reading_peak_mph": 65.0,
+                "num_reports": 8,
+                "rejected_cooldown_ms": 50.0,
+            },
+        )
+
+        assert server_module.monitor.kwargs == {
+            "port": "/dev/ops",
+            "trigger_threshold_mph": 35.0,
+            "max_speed_mph": 125.0,
+            "min_readings": 4,
+            "single_reading_peak_mph": 65.0,
+            "num_reports": 8,
+            "rejected_cooldown_ms": 50.0,
+        }
+        assert started["connected"] is True
+        assert started["event_callback"] is server_module.on_swing_speed_detected
+        assert started["live_callback"] is server_module.on_live_reading
+        assert session["mode"] == "swing-speed"
+        assert session["trigger_type"] is None
+
+        server_module.stop_monitor()
+
+    def test_start_monitor_uses_mock_swing_speed_monitor(self, monkeypatch):
+        """Mock swing speed mode should exercise the swing speed UI without hardware."""
+        session = {}
+
+        class FakeSessionLogger:
+            def start_session(self, **kwargs):
+                session.update(kwargs)
+
+            def end_session(self):
+                pass
+
+        monkeypatch.setattr(server_module, "monitor", None)
+        monkeypatch.setattr(server_module, "camera", None)
+        monkeypatch.setattr(server_module, "camera_tracker", None)
+        monkeypatch.setattr(server_module, "get_session_logger", lambda: FakeSessionLogger())
+
+        server_module.start_monitor(
+            mock=True,
+            swing_speed_mode=True,
+            swing_speed_kwargs={
+                "trigger_threshold_mph": 70.0,
+                "max_speed_mph": 125.0,
+                "min_readings": 5,
+            },
+        )
+
+        assert isinstance(server_module.monitor, MockSwingSpeedMonitor)
+        assert server_module.mock_mode is True
+        assert server_module.mock_swing_speed_mode is True
+        assert server_module.monitor.trigger_threshold_mph == 70.0
+        assert server_module.monitor.max_speed_mph == 125.0
+        assert server_module.monitor.min_readings == 5
+        assert session["mode"] == "swing-speed"
+        assert session["trigger_type"] is None
+
+        server_module.stop_monitor()
+
+    def test_mock_swing_speed_simulates_bounded_event(self):
+        """Mock swing speed reps should respect configured lower and upper gates."""
+        emitted = []
+        monitor = MockSwingSpeedMonitor(
+            trigger_threshold_mph=75.0,
+            max_speed_mph=110.0,
+            min_readings=5,
+        )
+
+        monitor.start(event_callback=emitted.append)
+        event = monitor.simulate_shot()
+
+        assert emitted == [event]
+        assert 75.0 <= event.peak_speed_mph <= 110.0
+        assert event.reading_count >= 5
+        assert monitor.get_session_stats()["shot_count"] == 1
+
+    def test_mock_swing_speed_stamps_training_implement(self):
+        """Mock reps should use the selected training implement metadata."""
+        monitor = MockSwingSpeedMonitor()
+
+        assert (
+            server_module.TRAINING_IMPLEMENT_LABELS["rypstick-3w-cw"]
+            == "Rypstick 3 Weights + Counterweight"
+        )
+
+        monitor.set_training_implement("rypstick-3w-cw", "Rypstick 3 Weights + Counterweight")
+        event = monitor.simulate_shot(peak_speed=95.0)
+        shot = swing_speed_to_shot_dict(event)
+
+        assert event.training_implement == "rypstick-3w-cw"
+        assert event.training_implement_label == "Rypstick 3 Weights + Counterweight"
+        assert shot["club"] == "Rypstick 3 Weights + Counterweight"
+
+    def test_delete_session_row_removes_mock_swing_speed_event(self, monkeypatch):
+        """Deleting a swing-speed UI row should remove the matching event."""
+        monitor = MockSwingSpeedMonitor(
+            trigger_threshold_mph=75.0,
+            max_speed_mph=110.0,
+            min_readings=5,
+        )
+        first = monitor.simulate_shot(peak_speed=95.0)
+        second = monitor.simulate_shot(peak_speed=101.0)
+
+        monkeypatch.setattr(server_module, "monitor", monitor)
+
+        assert server_module._delete_session_row(first.timestamp.isoformat()) is True
+        remaining = server_module._session_shots()
+
+        assert len(remaining) == 1
+        assert remaining[0]["timestamp"] == second.timestamp.isoformat()
+        assert remaining[0]["club"] == "Driver"
+
+    def test_set_radar_config_updates_swing_speed_gates(self, monkeypatch):
+        """UI tuning should update live swing-speed lower and upper gates."""
+        calls = []
+        emitted = []
+
+        class StubRadar:
+            def set_min_speed_filter(self, value):
+                calls.append(("min", value))
+
+            def set_max_speed_filter(self, value):
+                calls.append(("max", value))
+
+        class StubSwingSpeedMonitor:
+            radar = StubRadar()
+            trigger_threshold_mph = 70.0
+            max_speed_mph = 125.0
+
+        monkeypatch.setattr(server_module, "monitor", StubSwingSpeedMonitor())
+        monkeypatch.setattr(server_module, "mock_mode", False)
+        monkeypatch.setattr(server_module, "radar_config", {"min_speed": 70, "max_speed": 125})
+        monkeypatch.setattr(server_module, "get_session_logger", lambda: None)
+        monkeypatch.setattr(
+            server_module.socketio,
+            "emit",
+            lambda event, payload: emitted.append((event, payload)),
+        )
+        monkeypatch.setattr(
+            server_module,
+            "log_session_error",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            "openflight.swing_speed.SwingSpeedMonitor",
+            StubSwingSpeedMonitor,
+        )
+
+        server_module.handle_set_radar_config({"min_speed": 55, "max_speed": 115})
+
+        assert calls == [("min", 55), ("max", 115)]
+        assert server_module.monitor.trigger_threshold_mph == 55.0
+        assert server_module.monitor.max_speed_mph == 115.0
+        assert emitted[-1] == ("radar_config", {"min_speed": 55, "max_speed": 115})
+
+    def test_set_radar_config_forwards_zero_max_speed_to_clear_the_filter(self, monkeypatch):
+        """max_speed 0 must still reach the radar on the default launch path.
+
+        AN-010-AD (p10) defines "R<0 resets to no limit", so 0 is how the UI
+        clears a previously-set ceiling -- the default DebugPanel slider allows
+        it (min=0). Skipping the command leaves the old ceiling active on the
+        radar while radar_config reports 0, silently dropping fast shots.
+        """
+        calls = []
+
+        class StubRadar:
+            def set_min_speed_filter(self, value):
+                calls.append(("min", value))
+
+            def set_max_speed_filter(self, value):
+                calls.append(("max", value))
+
+        class StubMonitor:
+            radar = StubRadar()
+
+        monkeypatch.setattr(server_module, "monitor", StubMonitor())
+        monkeypatch.setattr(server_module, "mock_mode", False)
+        monkeypatch.setattr(server_module, "mock_swing_speed_mode", False)
+        monkeypatch.setattr(server_module, "radar_config", {"min_speed": 10, "max_speed": 150})
+        monkeypatch.setattr(server_module, "get_session_logger", lambda: None)
+        monkeypatch.setattr(server_module.socketio, "emit", lambda *_a, **_kw: None)
+        monkeypatch.setattr(server_module, "log_session_error", lambda *_a, **_kw: None)
+
+        server_module.handle_set_radar_config({"max_speed": 0})
+
+        assert ("max", 0) in calls, (
+            "R<0 is the documented reset-to-no-limit; suppressing it leaves the "
+            f"previous ceiling active on the radar. Calls: {calls}"
+        )
+        assert server_module.radar_config["max_speed"] == 0
 
 
 class TestEstimateLaunchAngle:

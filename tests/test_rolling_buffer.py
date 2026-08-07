@@ -1830,6 +1830,107 @@ class TestFindClubSpeedOverlap:
 
         assert club_speed == 75.0  # Higher magnitude
 
+    def test_accelerating_head_branch_beats_stronger_shaft_return(self, processor):
+        """Follow the upper pre-impact branch instead of the strongest reflector."""
+        ball_timestamp_ms = 30.0
+        readings = []
+        head_speeds = [60.0, 68.0, 75.0, 80.0, 82.0, 83.0, 83.0, 78.0]
+        for relative_ms, speed_mph in zip(
+            [-20.0, -18.0, -16.0, -14.0, -12.0, -10.0, -8.0, -6.0],
+            head_speeds,
+        ):
+            readings.append(
+                SpeedReading(
+                    speed_mph=speed_mph,
+                    magnitude=25.0,
+                    timestamp_ms=ball_timestamp_ms + relative_ms,
+                    direction="outbound",
+                )
+            )
+
+        # This slower shaft/body return is stronger than the club head and is
+        # what the former maximum-magnitude selector chose.
+        readings.append(
+            SpeedReading(
+                speed_mph=70.0,
+                magnitude=1000.0,
+                timestamp_ms=18.0,
+                direction="outbound",
+            )
+        )
+        readings.extend(
+            [
+                SpeedReading(98.0, 200.0, 26.0, "outbound"),
+                SpeedReading(99.0, 250.0, 27.0, "outbound"),
+                SpeedReading(100.0, 300.0, 30.0, "outbound"),
+            ]
+        )
+        timeline = SpeedTimeline(readings=readings, sample_rate_hz=937.5)
+
+        club_speed, club_ts = processor.find_club_speed(
+            timeline,
+            ball_speed_mph=100.0,
+            ball_timestamp_ms=ball_timestamp_ms,
+        )
+
+        assert club_speed == pytest.approx(82.0)
+        assert club_ts == 18.0
+
+    @pytest.mark.parametrize("club_type", [ClubType.SW, ClubType.LW])
+    def test_high_loft_wedge_uses_smooth_terminal_trace(self, processor, club_type):
+        """A high-loft wedge trace can merge into the similarly fast ball trace."""
+        ball_timestamp_ms = 30.0
+        readings = [
+            SpeedReading(speed, 30.0, ball_timestamp_ms + relative_ms, "outbound")
+            for relative_ms, speed in [
+                (-12.0, 47.0),
+                (-10.0, 52.0),
+                (-8.0, 57.0),
+                (-6.0, 62.0),
+                (-4.0, 66.0),
+                (-2.0, 68.0),
+                (-1.0, 69.0),
+                (0.0, 70.0),
+            ]
+        ]
+        timeline = SpeedTimeline(readings=readings, sample_rate_hz=937.5)
+
+        club_speed, club_ts = processor.find_club_speed(
+            timeline,
+            ball_speed_mph=70.0,
+            ball_timestamp_ms=ball_timestamp_ms,
+            club_type=club_type,
+        )
+
+        assert club_speed == pytest.approx(69.0)
+        assert club_ts == 29.0
+
+    def test_ball_contaminated_plateau_falls_back_to_credible_candidate(self, processor):
+        """A non-wedge plateau above 95% of ball speed is likely the ball."""
+        ball_timestamp_ms = 30.0
+        readings = [
+            SpeedReading(75.0, 500.0, 10.0, "outbound"),
+            SpeedReading(96.0, 20.0, 12.0, "outbound"),
+            SpeedReading(97.0, 20.0, 14.0, "outbound"),
+            SpeedReading(98.0, 20.0, 16.0, "outbound"),
+            SpeedReading(98.0, 20.0, 18.0, "outbound"),
+            SpeedReading(98.0, 20.0, 20.0, "outbound"),
+            SpeedReading(99.0, 100.0, 26.0, "outbound"),
+            SpeedReading(100.0, 200.0, 27.0, "outbound"),
+            SpeedReading(100.0, 300.0, 30.0, "outbound"),
+        ]
+        timeline = SpeedTimeline(readings=readings, sample_rate_hz=937.5)
+
+        club_speed, club_ts = processor.find_club_speed(
+            timeline,
+            ball_speed_mph=100.0,
+            ball_timestamp_ms=ball_timestamp_ms,
+            club_type=ClubType.IRON_9,
+        )
+
+        assert club_speed == 75.0
+        assert club_ts == 10.0
+
 
 class TestImpactEstimate:
     """Tests for OPS club-to-ball impact timing."""
@@ -2749,6 +2850,40 @@ class TestShutdownPreservesRollingBuffer:
         assert monitor._running is False, (
             "disconnect() must call stop() so the capture thread shuts down"
         )
+
+
+class TestRollingBufferStartupMode:
+    """Startup should respect the persisted HOST_INT rolling-buffer workaround."""
+
+    def test_sound_trigger_prepares_persisted_buffer_without_runtime_gc(self):
+        from openflight.rolling_buffer import RollingBufferMonitor
+
+        monitor = RollingBufferMonitor(port=None, trigger_type="sound", pre_trigger_segments=16)
+        monitor.radar = MagicMock()
+
+        assert monitor.connect() is True
+
+        monitor.radar.connect.assert_called_once()
+        monitor.radar.prepare_persisted_rolling_buffer.assert_called_once_with(
+            pre_trigger_segments=16,
+            sample_rate_ksps=30,
+        )
+        assert not monitor.radar.configure_for_rolling_buffer.called
+
+    def test_non_sound_trigger_can_configure_rolling_buffer_runtime(self):
+        from openflight.rolling_buffer import RollingBufferMonitor
+
+        monitor = RollingBufferMonitor(port=None, trigger_type="manual", pre_trigger_segments=12)
+        monitor.radar = MagicMock()
+
+        assert monitor.connect() is True
+
+        monitor.radar.connect.assert_called_once()
+        monitor.radar.configure_for_rolling_buffer.assert_called_once_with(
+            pre_trigger_segments=12,
+            sample_rate_ksps=30,
+        )
+        assert not monitor.radar.prepare_persisted_rolling_buffer.called
 
 
 class TestSpinWindowTrimming:

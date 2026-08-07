@@ -139,6 +139,168 @@ class TestParseReading:
         assert reading.direction == Direction.INBOUND
 
 
+class _ChunkedSpeedSerial:
+    """Serial stand-in that returns speed-stream chunks over multiple polls."""
+
+    is_open = True
+
+    def __init__(self, chunks):
+        self._chunks = [chunk.encode("ascii") for chunk in chunks]
+
+    @property
+    def in_waiting(self):
+        if not self._chunks:
+            return 0
+        return len(self._chunks[0])
+
+    def read(self, _size):
+        return self._chunks.pop(0)
+
+
+class TestReadSpeedNonblocking:
+    """Tests for non-blocking speed stream reads."""
+
+    def test_buffers_partial_json_until_complete_line(self):
+        """Split JSON lines should not be parsed until the newline arrives."""
+        radar = OPS243Radar.__new__(OPS243Radar)
+        radar.serial = _ChunkedSpeedSerial(
+            [
+                '{"magnitude":286.57, ',
+                '"speed":-71.81}\n',
+            ]
+        )
+        radar._json_mode = True
+        radar._unit = "mph"
+        radar._magnitude_enabled = True
+        radar._speed_read_buffer = ""
+
+        assert radar.read_speed_nonblocking() is None
+
+        reading = radar.read_speed_nonblocking()
+
+        assert reading is not None
+        assert reading.speed == 71.81
+        assert reading.direction == Direction.OUTBOUND
+        assert reading.magnitude == 286.57
+
+    def test_returns_last_valid_complete_line(self):
+        """When several lines arrive together, the newest valid reading wins."""
+        radar = OPS243Radar.__new__(OPS243Radar)
+        radar.serial = _ChunkedSpeedSerial(
+            [
+                '{"magnitude":21.0, "speed":-21.22}\n'
+                '{"magnitude":90.0, "speed":-44.07}\n'
+            ]
+        )
+        radar._json_mode = True
+        radar._unit = "mph"
+        radar._magnitude_enabled = True
+        radar._speed_read_buffer = ""
+
+        reading = radar.read_speed_nonblocking()
+
+        assert reading is not None
+        assert reading.speed == 44.07
+        assert reading.magnitude == 90.0
+
+    def test_multi_candidate_reader_returns_all_array_speeds(self):
+        """Multi-object JSON should expose all speed candidates."""
+        radar = OPS243Radar.__new__(OPS243Radar)
+        radar.serial = _ChunkedSpeedSerial(
+            [
+                '{"magnitude":[900.0, 120.0, 80.0], '
+                '"speed":[-55.0, -101.0, 42.0]}\n'
+            ]
+        )
+        radar._json_mode = True
+        radar._unit = "mph"
+        radar._magnitude_enabled = True
+        radar._speed_read_buffer = ""
+
+        readings = radar.read_speed_candidates_nonblocking()
+
+        assert [reading.speed for reading in readings] == [55.0, 101.0, 42.0]
+        assert readings[0].direction == Direction.OUTBOUND
+        assert readings[1].direction == Direction.OUTBOUND
+        assert readings[2].direction == Direction.INBOUND
+
+
+class TestPreparePersistedRollingBuffer:
+    """Tests for returning from speed mode to sound-trigger launch mode."""
+
+    def test_prepare_rearms_without_restoring_or_saving(self, monkeypatch):
+        """Normal sound mode should not force GC/A! on a healthy persisted radar."""
+        calls = []
+
+        class FakeSerial:
+            is_open = True
+
+        radar = OPS243Radar.__new__(OPS243Radar)
+        radar.serial = FakeSerial()
+
+        monkeypatch.setattr(radar, "set_units", lambda unit: calls.append(("set_units", unit.value)))
+        monkeypatch.setattr(radar, "set_transmit_power", lambda value: calls.append(("set_transmit_power", value)))
+        monkeypatch.setattr(radar, "set_sample_rate", lambda value: calls.append(("set_sample_rate", value)))
+        monkeypatch.setattr(
+            radar,
+            "rearm_rolling_buffer",
+            lambda pre_trigger_segments: calls.append(("rearm_rolling_buffer", pre_trigger_segments)),
+        )
+        monkeypatch.setattr(
+            radar,
+            "restore_rolling_buffer_mode",
+            lambda **kwargs: calls.append(("restore_rolling_buffer_mode", kwargs)),
+        )
+
+        radar.prepare_persisted_rolling_buffer(pre_trigger_segments=16, sample_rate_ksps=30)
+
+        assert calls == [
+            ("set_units", "US"),
+            ("set_transmit_power", 3),
+            ("set_sample_rate", 30000),
+            ("rearm_rolling_buffer", 16),
+        ]
+
+    def test_restore_rolling_buffer_mode_does_not_save_to_flash(self, monkeypatch):
+        """Runtime mode switching should not send A! or write persistent flash."""
+        calls = []
+
+        class FakeSerial:
+            is_open = True
+
+            def write(self, data):
+                calls.append(("write", data))
+
+            def flush(self):
+                calls.append(("flush", None))
+
+            def reset_input_buffer(self):
+                calls.append(("reset_input_buffer", None))
+
+        radar = OPS243Radar.__new__(OPS243Radar)
+        radar.serial = FakeSerial()
+
+        monkeypatch.setattr(radar, "set_units", lambda unit: calls.append(("set_units", unit.value)))
+        monkeypatch.setattr(radar, "set_transmit_power", lambda value: calls.append(("set_transmit_power", value)))
+        monkeypatch.setattr(
+            radar,
+            "enter_rolling_buffer_mode",
+            lambda pre_trigger_segments, sample_rate_ksps: calls.append(
+                ("enter_rolling_buffer_mode", pre_trigger_segments, sample_rate_ksps)
+            ),
+        )
+
+        radar.restore_rolling_buffer_mode(pre_trigger_segments=16, sample_rate_ksps=30)
+
+        assert ("write", b"A!") not in calls
+        assert calls == [
+            ("set_units", "US"),
+            ("set_transmit_power", 3),
+            ("enter_rolling_buffer_mode", 16, 30),
+            ("reset_input_buffer", None),
+        ]
+
+
 class TestFFTSize:
     """Tests for FFT size configuration."""
 

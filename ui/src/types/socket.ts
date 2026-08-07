@@ -25,6 +25,18 @@ export interface SimShotInfo {
   provenance: Record<string, 'measured' | 'estimated'>;
 }
 
+export interface SwingSpeedEvent {
+  peak_speed_mph: number;
+  timestamp: string;
+  duration_ms: number;
+  reading_count: number;
+  trigger_speed_mph: number;
+  peak_magnitude: number | null;
+  player_name?: string;
+  unit: string;
+  mode: 'swing-speed';
+}
+
 export interface RadarConfig {
   min_speed: number;
   max_speed: number;

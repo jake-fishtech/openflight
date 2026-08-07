@@ -5,27 +5,36 @@ interface SystemState {
   connected: boolean;
   mockMode: boolean;
   debugMode: boolean;
+  cloudUploadState: 'idle' | 'running' | 'complete' | 'error';
+  cloudUploadMessage: string;
   simStatuses: Record<string, SimStatus>;
   latestSimShots: Record<string, SimShotInfo>;
   serverClub: string | null;
+  serverPlayerName: string | null;
   setConnected: (connected: boolean) => void;
   setMockMode: (mockMode: boolean) => void;
   setDebugMode: (debugMode: boolean) => void;
+  setCloudUploadStatus: (state: SystemState['cloudUploadState'], message: string) => void;
   setSimStatus: (status: SimStatus) => void;
   setLatestSimShot: (shot: SimShotInfo) => void;
   setServerClub: (club: string | null) => void;
+  setServerPlayerName: (playerName: string | null) => void;
 }
 
 export const useSystemStore = create<SystemState>((set) => ({
   connected: false,
   mockMode: false,
   debugMode: false,
+  cloudUploadState: 'idle',
+  cloudUploadMessage: '',
   simStatuses: {},
   latestSimShots: {},
   serverClub: null,
+  serverPlayerName: null,
   setConnected: (connected) => set({ connected }),
   setMockMode: (mockMode) => set({ mockMode }),
   setDebugMode: (debugMode) => set({ debugMode }),
+  setCloudUploadStatus: (cloudUploadState, cloudUploadMessage) => set({ cloudUploadState, cloudUploadMessage }),
   setSimStatus: (status) =>
     set((state) => ({
       simStatuses: { ...state.simStatuses, [status.target]: status },
@@ -35,4 +44,5 @@ export const useSystemStore = create<SystemState>((set) => ({
       latestSimShots: { ...state.latestSimShots, [shot.target]: shot },
     })),
   setServerClub: (serverClub) => set({ serverClub }),
+  setServerPlayerName: (serverPlayerName) => set({ serverPlayerName }),
 }));

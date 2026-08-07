@@ -8,6 +8,15 @@ updates:
       - dependencies
       - python
     open-pull-requests-limit: 5
+    groups:
+      # Batch all non-breaking bumps into a single PR. Majors are left
+      # ungrouped so each breaking change gets its own reviewable PR.
+      python-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
 
   - package-ecosystem: npm
     directory: /ui
@@ -18,15 +27,26 @@ updates:
       - javascript
     open-pull-requests-limit: 5
     groups:
+      # A dependency lands in the FIRST group it matches, so this must stay
+      # above the catch-all below.
+      #
       # react and react-dom share internal runtime state and must always be
       # on the exact same version. Group them (with their type stubs) so a
-      # bump to one never lands without the other.
+      # bump to one never lands without the other — including majors.
       react:
         patterns:
           - "react"
           - "react-dom"
           - "@types/react"
           - "@types/react-dom"
+      # Batch every other non-breaking bump into a single PR. Majors are
+      # left ungrouped so each breaking change gets its own reviewable PR.
+      npm-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
 
   - package-ecosystem: github-actions
     directory: /
@@ -35,3 +55,9 @@ updates:
     labels:
       - dependencies
       - ci
+    groups:
+      # Action bumps are low risk, so batch all of them — majors included —
+      # into one PR.
+      github-actions:
+        patterns:
+          - "*"

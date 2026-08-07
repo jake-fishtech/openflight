@@ -86,6 +86,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--kld7-bypass-vertical-gate` renamed to `--kld7-vertical-raw`.
 
 ### Fixed
+- Session logging: serialize all access to the session JSONL file with a
+  lock. The `log_*` methods are called concurrently from the OPS243
+  capture thread, the K-LD7 stream thread, and Flask-SocketIO handlers;
+  without synchronization, large entries (e.g. `rolling_buffer_capture`
+  with 2×4096 samples) could interleave and corrupt JSONL lines, and a
+  write could race `end_session()` closing the file (`AttributeError` /
+  `ValueError: I/O operation on closed file`). Corrupt lines break the
+  offline replay tooling that depends on these logs.
+- IWR6843 runtime: the ball-estimate call passed a hardcoded
+  `tdm_sign_policy="positive"` instead of the runtime's configurable field
+  (the club-path fallback already honored the field, and offline replay
+  plumbs a caller-supplied policy end to end). Any non-default policy
+  silently produced different live-vs-replay answers for the same capture.
+  Live behavior with the default is unchanged.
 - **GPIO startup on a Raspberry Pi 5.** Anything using the sound-trigger GPIO —
   the IWR6843 capture monitor and the GPIO sound trigger — died with
   `BadPinFactory: Unable to load any default pin factory!`. The cause is

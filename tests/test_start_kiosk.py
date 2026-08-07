@@ -1,10 +1,24 @@
 """Tests for the kiosk entry script flag wiring."""
 
+import shutil
 import subprocess
+from pathlib import Path
+
+import pytest
+
+# The contract under test is the bash script's flag forwarding; without a
+# POSIX shell there is nothing to exercise. With one present (e.g. Git Bash
+# on Windows) --dry-run works everywhere.
+pytestmark = pytest.mark.skipif(
+    shutil.which("bash") is None, reason="start-kiosk.sh contract tests need bash"
+)
 
 
 def _dry_run(*args: str, check: bool = True):
-    repo_root = __file__.rsplit("/tests/", 1)[0]
+    # pathlib, not string-splitting on "/tests/": __file__ uses backslashes
+    # on Windows, which made repo_root the test file itself (cwd=<file> ->
+    # NotADirectoryError in CreateProcess).
+    repo_root = Path(__file__).resolve().parents[1]
     return subprocess.run(
         ["bash", "scripts/start-kiosk.sh", *args, "--dry-run"],
         cwd=repo_root,
@@ -109,6 +123,61 @@ def test_kld7_angle_offset_override_wins():
 
     assert "--kld7-angle-offset 3.5" in command
     assert "--kld7-angle-offset 1.5" not in command
+
+
+def test_swing_speed_flags_forwarded():
+    """Swing speed training flags should reach the server command."""
+    result = _dry_run(
+        "--swing-speed",
+        "--swing-speed-threshold",
+        "35",
+        "--swing-speed-max",
+        "125",
+        "--swing-speed-min-readings",
+        "4",
+        "--swing-speed-single-peak",
+        "65",
+        "--swing-speed-num-reports",
+        "8",
+        "--swing-speed-end-ms",
+        "300",
+        "--swing-speed-cooldown-ms",
+        "900",
+        "--swing-speed-rejected-cooldown-ms",
+        "50",
+    )
+    command = result.stdout.strip()
+
+    assert "--swing-speed" in command
+    assert "--swing-speed-threshold 35" in command
+    assert "--swing-speed-max 125" in command
+    assert "--swing-speed-min-readings 4" in command
+    assert "--swing-speed-single-peak 65" in command
+    assert "--swing-speed-num-reports 8" in command
+    assert "--swing-speed-end-ms 300" in command
+    assert "--swing-speed-cooldown-ms 900" in command
+    assert "--swing-speed-rejected-cooldown-ms 50" in command
+
+
+def test_mock_swing_speed_flag_forwards_mock_mode():
+    """Mock swing speed should use the server's no-hardware training mode."""
+    result = _dry_run("--mock-swing-speed", "--swing-speed-threshold", "45")
+    command = result.stdout.strip()
+
+    assert "--mock-swing-speed" in command
+    assert "--swing-speed-threshold 45" in command
+    assert "--swing-speed " not in f"{command} "
+    assert "--mock " not in f"{command} "
+
+
+def test_mock_and_swing_speed_flags_collapse_to_mock_swing_speed():
+    """The friendly --mock --swing-speed combo should avoid the server error path."""
+    result = _dry_run("--mock", "--swing-speed")
+    command = result.stdout.strip()
+
+    assert "--mock-swing-speed" in command
+    assert "--swing-speed " not in f"{command} "
+    assert "--mock " not in f"{command} "
 
 
 def test_kld7_vertical_raw_flag_forwarded():

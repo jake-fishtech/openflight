@@ -54,6 +54,10 @@
   flex: 1;
 }
 
+.stats-grid--swing-speed {
+  grid-template-columns: repeat(4, 1fr);
+}
+
 .stat-card {
   display: flex;
   flex-direction: column;
@@ -130,6 +134,10 @@
 
   .stats-grid {
     gap: var(--space-xs);
+  }
+
+  .stats-grid--swing-speed {
+    grid-template-columns: repeat(2, 1fr);
   }
 
   .stat-card {

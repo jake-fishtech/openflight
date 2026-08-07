@@ -2,6 +2,8 @@
 
 Hardware components for building the OpenFlight golf launch monitor.
 
+> **Ordering shortcut:** A shared **[OpenFlight Mouser project](https://www.mouser.com/en/Tools/Project/Share?AccessID=4c97a00bbc)** is available for the parts Mouser stocks — open it, save it to your own Mouser account, and add the whole list to your cart in one step instead of searching for each item. Check it against the tables below before you order: anything Mouser does not carry has a direct vendor link here.
+
 > **Next step after gathering parts:** See the [Raspberry Pi Setup Guide](raspberry-pi-setup.md) for assembly and software installation.
 
 ## Core Components
@@ -85,6 +87,19 @@ radars over USB.
 Full instructions: **[IWR6843 Operator Guide](iwr6843/README.md)** for wiring,
 flashing, mounting, and geometry; **[Moving the OPS243 to the Pi GPIO
 UART](ops243-uart-migration.md)** for the OPS side of Layout A.
+
+### Optional Enclosure Inclinometer
+
+An LIS3DH mounted to the enclosure base lets OpenFlight compensate the IWR6843
+tilt when the rig is placed on uneven ground.
+
+| Part | Description | Link | ~Price |
+|------|-------------|------|--------|
+| **Adafruit LIS3DH breakout** | Triple-axis accelerometer with STEMMA QT connectors | [Adafruit product 2809](https://www.adafruit.com/product/2809) | $5 |
+| **JST-SH cable kit** | Solderless STEMMA QT/Qwiic to female Dupont wiring used in the validated build | [Amazon](https://www.amazon.com/Connector-Compatible-Development-Sensors-Drivers/dp/B0GJPRX4YT) | ~$10 |
+
+See the **[LIS3DH Inclinometer Setup Guide](inclinometer/README.md)** for wiring,
+mounting, calibration, startup flags, and troubleshooting.
 
 ---
 

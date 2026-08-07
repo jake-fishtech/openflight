@@ -1,12 +1,14 @@
 export type SpinQuality = 'high' | 'medium' | 'low' | 'experimental';
 
 export interface Shot {
+  mode?: 'rolling-buffer' | 'mock' | 'swing-speed';
   ball_speed_mph: number;
   club_speed_mph: number | null;
   smash_factor: number | null;
   estimated_carry_yards: number;
   carry_range: [number, number];
   club: string;
+  player_name?: string;
   timestamp: string;
   peak_magnitude: number | null;
   // Launch angle data (from K-LD7 radar (deprecated), camera, or estimation)
@@ -25,6 +27,11 @@ export interface Shot {
   spin_method?: string | null;
   spin_multipath_fade_hz?: number | null;
   carry_spin_adjusted: number | null;
+  swing_speed_duration_ms?: number;
+  swing_speed_reading_count?: number;
+  swing_speed_trigger_mph?: number;
+  training_implement?: string;
+  training_implement_label?: string;
 }
 
 export interface SessionStats {
@@ -71,13 +78,98 @@ export interface TriggerDiagnostic {
 }
 
 export interface TriggerStatus {
-  mode: 'rolling-buffer' | 'mock';
+  mode: 'rolling-buffer' | 'mock' | 'swing-speed';
   trigger_type: string | null;
   radar_connected: boolean;
   radar_port: string | null;
   triggers_total: number;
   triggers_accepted: number;
   triggers_rejected: number;
+}
+
+export interface SwingSpeedStats {
+  count: number;
+  last_speed_mph: number;
+  best_speed_mph: number;
+  avg_speed_mph: number;
+}
+
+export interface SwingSpeedStatsFilter {
+  playerName?: string | null;
+  trainingImplement?: string | null;
+  club?: string | null;
+}
+
+export function isSwingSpeedShot(shot: Shot | null): boolean {
+  return shot?.mode === 'swing-speed' || shot?.club === 'Swing Speed';
+}
+
+export function getSwingSpeedMph(shot: Shot): number {
+  return shot.club_speed_mph ?? shot.ball_speed_mph;
+}
+
+function normalizePlayerName(playerName: string | null | undefined): string {
+  return (playerName?.trim() || 'Player 1').toLowerCase();
+}
+
+function normalizeToken(value: string | null | undefined): string {
+  return (value?.trim() || '').toLowerCase();
+}
+
+export function filterSwingSpeedShots(shots: Shot[], filter: SwingSpeedStatsFilter = {}): Shot[] {
+  const playerName = normalizePlayerName(filter.playerName);
+  const trainingImplement = normalizeToken(filter.trainingImplement);
+  const club = normalizeToken(filter.club);
+
+  return shots.filter((shot) => {
+    if (!isSwingSpeedShot(shot)) {
+      return false;
+    }
+
+    if (filter.playerName && normalizePlayerName(shot.player_name) !== playerName) {
+      return false;
+    }
+
+    if (trainingImplement) {
+      const shotImplement = normalizeToken(shot.training_implement);
+      const shotImplementLabel = normalizeToken(shot.training_implement_label);
+      const shotClub = normalizeToken(shot.club);
+
+      return (
+        shotImplement === trainingImplement ||
+        shotImplementLabel === trainingImplement ||
+        shotClub === trainingImplement
+      );
+    }
+
+    if (club && normalizeToken(shot.club) !== club) {
+      return false;
+    }
+
+    return true;
+  });
+}
+
+export function computeSwingSpeedStats(shots: Shot[], filter: SwingSpeedStatsFilter = {}): SwingSpeedStats {
+  const swingSpeeds = filterSwingSpeedShots(shots, filter).map(getSwingSpeedMph);
+
+  if (swingSpeeds.length === 0) {
+    return {
+      count: 0,
+      last_speed_mph: 0,
+      best_speed_mph: 0,
+      avg_speed_mph: 0,
+    };
+  }
+
+  const total = swingSpeeds.reduce((sum, speed) => sum + speed, 0);
+
+  return {
+    count: swingSpeeds.length,
+    last_speed_mph: swingSpeeds[swingSpeeds.length - 1],
+    best_speed_mph: Math.max(...swingSpeeds),
+    avg_speed_mph: total / swingSpeeds.length,
+  };
 }
 
 /**

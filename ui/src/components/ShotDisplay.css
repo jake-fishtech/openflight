@@ -69,6 +69,18 @@
   flex: 1.2;
 }
 
+.shot-display--swing-speed {
+  border-color: rgba(212, 175, 55, 0.22);
+}
+
+.shot-display--swing-speed .shot-display__primary {
+  flex: 1;
+}
+
+.shot-display__metrics--swing-speed {
+  flex: 1;
+}
+
 /* Speed Gauge */
 .speed-gauge {
   position: relative;

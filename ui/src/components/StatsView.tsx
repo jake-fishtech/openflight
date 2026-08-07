@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useUnitPreference } from '../state/useUnitPreference';
 import type { Shot } from '../types/shot';
-import { computeStats, getUniqueClubs } from '../types/shot';
+import { computeStats, computeSwingSpeedStats, getUniqueClubs, isSwingSpeedShot } from '../types/shot';
 import { formatDistance, formatSpeed, getDistanceUnit, getSpeedUnit } from '../utils/units';
 import './StatsView.css';
 
@@ -32,6 +32,8 @@ export function StatsView({ shots, onClearSession }: StatsViewProps) {
   }, [shots, selectedClub]);
 
   const stats = useMemo(() => computeStats(filteredShots), [filteredShots]);
+  const isSwingSpeedSession = filteredShots.length > 0 && filteredShots.every(isSwingSpeedShot);
+  const swingStats = useMemo(() => computeSwingSpeedStats(filteredShots), [filteredShots]);
 
   if (shots.length === 0) {
     return (
@@ -61,36 +63,57 @@ export function StatsView({ shots, onClearSession }: StatsViewProps) {
         ))}
       </div>
 
-      <div className="stats-grid">
-        <div className="stat-card">
-          <span className="stat-card__value">{stats.shot_count}</span>
-          <span className="stat-card__label">Shots</span>
-        </div>
-        <div className="stat-card stat-card--primary">
-          <span className="stat-card__value">{formatSpeed(stats.avg_ball_speed, unitSystem, 1)}</span>
-          <span className="stat-card__label">Avg Ball ({speedUnit})</span>
-        </div>
-        <div className="stat-card">
-          <span className="stat-card__value">{formatSpeed(stats.max_ball_speed, unitSystem, 1)}</span>
-          <span className="stat-card__label">Max Ball ({speedUnit})</span>
-        </div>
-        <div className="stat-card stat-card--primary">
-          <span className="stat-card__value">{formatDistance(stats.avg_carry_est, unitSystem, 0)}</span>
-          <span className="stat-card__label">Avg Carry ({distanceUnit})</span>
-        </div>
-        {stats.avg_club_speed && (
+      {isSwingSpeedSession ? (
+        <div className="stats-grid stats-grid--swing-speed">
           <div className="stat-card">
-            <span className="stat-card__value">{formatSpeed(stats.avg_club_speed, unitSystem, 1)}</span>
-            <span className="stat-card__label">Avg Club ({speedUnit})</span>
+            <span className="stat-card__value">{swingStats.count}</span>
+            <span className="stat-card__label">Swings</span>
           </div>
-        )}
-        {stats.avg_smash_factor && (
+          <div className="stat-card stat-card--primary">
+            <span className="stat-card__value">{formatSpeed(swingStats.last_speed_mph, unitSystem, 1)}</span>
+            <span className="stat-card__label">Last ({speedUnit})</span>
+          </div>
+          <div className="stat-card stat-card--primary">
+            <span className="stat-card__value">{formatSpeed(swingStats.best_speed_mph, unitSystem, 1)}</span>
+            <span className="stat-card__label">Best ({speedUnit})</span>
+          </div>
           <div className="stat-card">
-            <span className="stat-card__value">{stats.avg_smash_factor.toFixed(2)}</span>
-            <span className="stat-card__label">Avg Smash</span>
+            <span className="stat-card__value">{formatSpeed(swingStats.avg_speed_mph, unitSystem, 1)}</span>
+            <span className="stat-card__label">Average ({speedUnit})</span>
           </div>
-        )}
-      </div>
+        </div>
+      ) : (
+        <div className="stats-grid">
+          <div className="stat-card">
+            <span className="stat-card__value">{stats.shot_count}</span>
+            <span className="stat-card__label">Shots</span>
+          </div>
+          <div className="stat-card stat-card--primary">
+            <span className="stat-card__value">{formatSpeed(stats.avg_ball_speed, unitSystem, 1)}</span>
+            <span className="stat-card__label">Avg Ball ({speedUnit})</span>
+          </div>
+          <div className="stat-card">
+            <span className="stat-card__value">{formatSpeed(stats.max_ball_speed, unitSystem, 1)}</span>
+            <span className="stat-card__label">Max Ball ({speedUnit})</span>
+          </div>
+          <div className="stat-card stat-card--primary">
+            <span className="stat-card__value">{formatDistance(stats.avg_carry_est, unitSystem, 0)}</span>
+            <span className="stat-card__label">Avg Carry ({distanceUnit})</span>
+          </div>
+          {stats.avg_club_speed && (
+            <div className="stat-card">
+              <span className="stat-card__value">{formatSpeed(stats.avg_club_speed, unitSystem, 1)}</span>
+              <span className="stat-card__label">Avg Club ({speedUnit})</span>
+            </div>
+          )}
+          {stats.avg_smash_factor && (
+            <div className="stat-card">
+              <span className="stat-card__value">{stats.avg_smash_factor.toFixed(2)}</span>
+              <span className="stat-card__label">Avg Smash</span>
+            </div>
+          )}
+        </div>
+      )}
 
       <button className="clear-button" onClick={onClearSession}>
         Clear Session

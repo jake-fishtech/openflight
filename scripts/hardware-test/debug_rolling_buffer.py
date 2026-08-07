@@ -272,7 +272,7 @@ def main():
             print("  FAIL: No I/Q data received")
             print()
             print("  Troubleshooting:")
-            print("    1. Check firmware version supports GC mode (1.2.3+)")
+            print("    1. Check firmware version supports GC rolling buffer mode (1.2.3+)")
             print("    2. Try power cycling the radar")
             print("    3. Check if HOST_INT pin is floating/grounded")
 

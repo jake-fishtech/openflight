@@ -294,6 +294,8 @@ export function DebugPanel({
 }: DebugPanelProps) {
   const [activeTab, setActiveTab] = useState<DebugTab>('status');
   const isRollingBuffer = triggerStatus.mode === 'rolling-buffer';
+  const isSwingSpeed = triggerStatus.mode === 'swing-speed';
+  const tuningDisabled = mockMode && !isSwingSpeed;
   const lastDiag = triggerDiagnostics.length > 0 ? triggerDiagnostics[triggerDiagnostics.length - 1] : null;
 
   // Show last 20 triggers, newest first
@@ -359,26 +361,54 @@ export function DebugPanel({
         {activeTab === 'tuning' && (
           <div className="debug-panel__section">
             <h4>Radar Tuning</h4>
-            {mockMode && <p className="debug-panel__mock-warning">Radar tuning disabled in mock mode</p>}
+            {tuningDisabled && <p className="debug-panel__mock-warning">Radar tuning disabled in mock mode</p>}
+            {mockMode && isSwingSpeed && (
+              <p className="debug-panel__mock-warning">Mock swing speed sliders shape simulated reps only</p>
+            )}
             <div className="debug-panel__controls">
-              <SliderControl
-                label="Min Speed"
-                value={radarConfig.min_speed}
-                min={0}
-                max={50}
-                unit=" mph"
-                disabled={mockMode}
-                onChange={(v) => onUpdateConfig({ min_speed: v })}
-              />
-              <SliderControl
-                label="Min Magnitude"
-                value={radarConfig.min_magnitude}
-                min={0}
-                max={2000}
-                step={50}
-                disabled={mockMode}
-                onChange={(v) => onUpdateConfig({ min_magnitude: v })}
-              />
+              {isSwingSpeed ? (
+                <>
+                  <SliderControl
+                    label="Lower Speed"
+                    value={radarConfig.min_speed}
+                    min={30}
+                    max={100}
+                    unit=" mph"
+                    disabled={false}
+                    onChange={(v) => onUpdateConfig({ min_speed: v })}
+                  />
+                  <SliderControl
+                    label="Upper Speed"
+                    value={radarConfig.max_speed}
+                    min={90}
+                    max={170}
+                    unit=" mph"
+                    disabled={false}
+                    onChange={(v) => onUpdateConfig({ max_speed: v })}
+                  />
+                </>
+              ) : (
+                <>
+                  <SliderControl
+                    label="Min Speed"
+                    value={radarConfig.min_speed}
+                    min={0}
+                    max={50}
+                    unit=" mph"
+                    disabled={tuningDisabled}
+                    onChange={(v) => onUpdateConfig({ min_speed: v })}
+                  />
+                  <SliderControl
+                    label="Min Magnitude"
+                    value={radarConfig.min_magnitude}
+                    min={0}
+                    max={2000}
+                    step={50}
+                    disabled={tuningDisabled}
+                    onChange={(v) => onUpdateConfig({ min_magnitude: v })}
+                  />
+                </>
+              )}
               <SliderControl
                 label="TX Power"
                 value={radarConfig.transmit_power}
@@ -388,7 +418,11 @@ export function DebugPanel({
                 onChange={(v) => onUpdateConfig({ transmit_power: v })}
               />
             </div>
-            <p className="debug-panel__hint">TX Power: 0 = max range, 7 = min range</p>
+            <p className="debug-panel__hint">
+              {isSwingSpeed
+                ? 'Lower speed updates the OPS filter; upper speed rejects implausible high swing-speed outliers.'
+                : 'TX Power: 0 = max range, 7 = min range'}
+            </p>
           </div>
         )}
       </div>

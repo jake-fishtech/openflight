@@ -12,7 +12,7 @@ from typing import Callable, List, Optional, Tuple
 import numpy as np
 from scipy.signal import butter, find_peaks, sosfiltfilt
 
-from ..launch_monitor import SPIN_CONFIDENCE_HIGH
+from ..launch_monitor import SPIN_CONFIDENCE_HIGH, ClubType
 from .multitaper import estimate_multitaper_spin, repair_clipped_iq
 from .types import (
     ImpactEstimate,
@@ -73,6 +73,24 @@ class RollingBufferProcessor:
     # Matches the streaming processor's dc_mask and the trigger's
     # 15 mph acceptance threshold — no useful signal lives below 15 mph.
     DC_MASK_BINS = 150
+
+    # Club-speed extraction. Each overlapping FFT spans 4.27 ms, so the
+    # windows immediately before the first ball reading contain mixed club and
+    # ball energy. Track the fastest pre-impact Doppler branch, then summarize
+    # its plateau before that mixed region instead of selecting the strongest
+    # reflector (which is frequently the shaft or an earlier swing return).
+    CLUB_BRANCH_HISTORY_MS = 30.0
+    CLUB_BALL_ONSET_SEARCH_MS = 10.0
+    CLUB_BALL_MATCH_MIN_MPH = 4.0
+    CLUB_BALL_MATCH_FRACTION = 0.06
+    CLUB_PLATEAU_LOOKBACK_MS = 18.0
+    CLUB_PLATEAU_GUARD_MS = 4.0
+    CLUB_PLATEAU_QUANTILE = 0.70
+    CLUB_BALL_CONTAMINATION_RATIO = 0.95
+    CLUB_TERMINAL_START_MS = -2.5
+    CLUB_TERMINAL_END_MS = 1.0
+    CLUB_MAX_PLAUSIBLE_SPEED_MPH = 150.0
+    CLUB_SMOOTH_MERGE_TYPES = frozenset({ClubType.SW, ClubType.LW})
 
     # Spin detection via amplitude envelope demodulation.
     # The ball seam modulates the radar return at 1x spin rate.
@@ -1415,25 +1433,129 @@ class RollingBufferProcessor:
         ball_speed_mph: float,
         ball_timestamp_ms: float,
         max_window_ms: float = 100,
+        club_type: ClubType = ClubType.UNKNOWN,
     ) -> Tuple[Optional[float], Optional[float]]:
         """
-        Find club head speed from readings before ball impact.
+        Find club-head speed from the upper Doppler branch before impact.
 
-        Club speed should be:
-        - Before ball (temporally)
-        - 67-85% of ball speed (smash factor 1.18-1.50)
-        - Outbound direction
+        The club head normally forms the fastest accelerating branch before
+        the stable ball-speed branch appears. Its return can be weaker than the
+        shaft, so magnitude alone is not a reliable identity selector. The
+        final FFT windows also mix club and ball energy; a robust percentile of
+        the preceding plateau avoids that contamination.
+
+        High-loft wedge club and ball speeds can overlap, producing a smooth
+        merge rather than a distinct transition. For that case, use the terminal
+        upper branch instead of imposing an iron/driver smash-factor bracket.
 
         Args:
             timeline: Speed timeline
             ball_speed_mph: Detected ball speed
             ball_timestamp_ms: When ball was detected
             max_window_ms: Maximum time before ball to search
+            club_type: Selected club, used for smooth wedge transitions
 
         Returns:
             Tuple of (club_speed_mph, club_timestamp_ms) or (None, None)
         """
-        # Expected club speed range
+        legacy_speed, legacy_timestamp = self._find_club_speed_by_magnitude(
+            timeline,
+            ball_speed_mph,
+            ball_timestamp_ms,
+            max_window_ms,
+        )
+
+        history_ms = min(max_window_ms, self.CLUB_BRANCH_HISTORY_MS)
+        upper_by_timestamp: dict[float, SpeedReading] = {}
+        for reading in timeline.readings:
+            relative_ms = reading.timestamp_ms - ball_timestamp_ms
+            if not reading.is_outbound:
+                continue
+            if not -history_ms <= relative_ms <= self.CLUB_TERMINAL_END_MS:
+                continue
+            if not 0 < reading.speed_mph <= self.CLUB_MAX_PLAUSIBLE_SPEED_MPH:
+                continue
+            current = upper_by_timestamp.get(reading.timestamp_ms)
+            if current is None or reading.speed_mph > current.speed_mph:
+                upper_by_timestamp[reading.timestamp_ms] = reading
+
+        upper_branch = sorted(
+            upper_by_timestamp.values(),
+            key=lambda reading: reading.timestamp_ms,
+        )
+        if len(upper_branch) < 3:
+            return legacy_speed, legacy_timestamp
+
+        if club_type in self.CLUB_SMOOTH_MERGE_TYPES:
+            terminal = [
+                reading
+                for reading in upper_branch
+                if self.CLUB_TERMINAL_START_MS
+                <= reading.timestamp_ms - ball_timestamp_ms
+                <= self.CLUB_TERMINAL_END_MS
+            ]
+            terminal_pick = self._quantile_reading(terminal, 0.50)
+            if terminal_pick is not None:
+                return terminal_pick.speed_mph, terminal_pick.timestamp_ms
+
+        ball_tolerance_mph = max(
+            self.CLUB_BALL_MATCH_MIN_MPH,
+            ball_speed_mph * self.CLUB_BALL_MATCH_FRACTION,
+        )
+        onset_timestamp_ms: Optional[float] = None
+        for first, second in zip(upper_branch, upper_branch[1:]):
+            first_relative_ms = first.timestamp_ms - ball_timestamp_ms
+            if first_relative_ms < -self.CLUB_BALL_ONSET_SEARCH_MS:
+                continue
+            if (
+                abs(first.speed_mph - ball_speed_mph) <= ball_tolerance_mph
+                and abs(second.speed_mph - ball_speed_mph) <= ball_tolerance_mph
+            ):
+                onset_timestamp_ms = first.timestamp_ms
+                break
+
+        if onset_timestamp_ms is None:
+            # One overlapping FFT step before the mixed club/ball guard.
+            onset_timestamp_ms = ball_timestamp_ms - 3.2
+
+        plateau_start_ms = onset_timestamp_ms - self.CLUB_PLATEAU_LOOKBACK_MS
+        plateau_end_ms = onset_timestamp_ms - self.CLUB_PLATEAU_GUARD_MS
+        plateau = [
+            reading
+            for reading in upper_branch
+            if plateau_start_ms <= reading.timestamp_ms <= plateau_end_ms
+        ]
+        plateau_pick = self._quantile_reading(plateau, self.CLUB_PLATEAU_QUANTILE)
+        if plateau_pick is None:
+            return legacy_speed, legacy_timestamp
+
+        if plateau_pick.speed_mph > ball_speed_mph * self.CLUB_BALL_CONTAMINATION_RATIO:
+            return legacy_speed, legacy_timestamp
+
+        return plateau_pick.speed_mph, plateau_pick.timestamp_ms
+
+    @staticmethod
+    def _quantile_reading(readings: list[SpeedReading], quantile: float) -> Optional[SpeedReading]:
+        """Return the observed reading nearest a speed quantile."""
+        if not readings:
+            return None
+        target_speed = float(np.quantile([reading.speed_mph for reading in readings], quantile))
+        return min(
+            readings,
+            key=lambda reading: (
+                abs(reading.speed_mph - target_speed),
+                -reading.timestamp_ms,
+            ),
+        )
+
+    @staticmethod
+    def _find_club_speed_by_magnitude(
+        timeline: SpeedTimeline,
+        ball_speed_mph: float,
+        ball_timestamp_ms: float,
+        max_window_ms: float,
+    ) -> Tuple[Optional[float], Optional[float]]:
+        """Provide a conservative fallback when no usable branch exists."""
         min_club = ball_speed_mph * 0.67
         max_club = ball_speed_mph * 0.85
 
@@ -1454,7 +1576,6 @@ class RollingBufferProcessor:
         if not candidates:
             return None, None
 
-        # Select highest magnitude (club head has larger radar cross-section)
         club_reading = max(candidates, key=lambda r: r.magnitude)
 
         return club_reading.speed_mph, club_reading.timestamp_ms
@@ -1639,6 +1760,7 @@ class RollingBufferProcessor:
         capture: IQCapture,
         expected_spin_rpm: Optional[float] = None,
         expected_spin_for_ball_speed: Optional[Callable[[float], float]] = None,
+        club_type: ClubType = ClubType.UNKNOWN,
     ) -> Optional[ProcessedCapture]:
         """
         Full processing pipeline: I/Q -> speeds -> spin -> shot data.
@@ -1649,6 +1771,7 @@ class RollingBufferProcessor:
                 only to choose among visible envelope peaks.
             expected_spin_for_ball_speed: Optional callback for deriving a
                 spin prior after ball speed has been detected.
+            club_type: Selected club for club-speed transition interpretation.
 
         Returns:
             ProcessedCapture with all extracted data, or None if processing fails
@@ -1701,7 +1824,10 @@ class RollingBufferProcessor:
 
         # Find club speed
         club_speed_mph, club_timestamp_ms = self.find_club_speed(
-            timeline, ball_speed_mph, ball_timestamp_ms
+            timeline,
+            ball_speed_mph,
+            ball_timestamp_ms,
+            club_type=club_type,
         )
         if club_speed_mph is not None:
             logger.info(
