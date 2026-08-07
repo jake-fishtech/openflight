@@ -12,5 +12,7 @@
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>OpenFlight connects to your Raspberry Pi on this network to receive shot data over Wi-Fi.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>OpenFlight uses motion sensors to measure and calibrate the TI radar mount angle.</string>
 </dict>
 </plist>

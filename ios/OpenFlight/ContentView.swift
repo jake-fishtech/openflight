@@ -19,9 +19,15 @@ struct ContentView: View {
     @StateObject private var wifi = WiFiShotClient()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showDrivingRange = false
+    @State private var showRadarCalibration = false
+    @State private var isChangingClub = false
+    @State private var clubError: String?
 
     @AppStorage("shotTransport") private var storedTransport = ShotTransport.bluetooth.rawValue
     @AppStorage("piHost") private var host = WiFiShotClient.defaultHost
+    @AppStorage("selectedClub") private var storedClub = GolfClub.driver.rawValue
+
+    private let clubClient = ClubSelectionClient()
 
     init() {
         _showDrivingRange = State(
@@ -98,8 +104,23 @@ struct ContentView: View {
             wifi.disconnect()
             startSelectedTransport()
         }
+        .onChange(of: state) {
+            synchronizeStoredClubIfReady()
+        }
+        .onChange(of: bluetooth.supportsPhoneControls) {
+            synchronizeStoredClubIfReady()
+        }
         .fullScreenCover(isPresented: $showDrivingRange) {
             DrivingRangeView(latestShot: latestShot)
+        }
+        .sheet(isPresented: $showRadarCalibration) {
+            NavigationStack {
+                RadarCalibrationView(
+                    host: $host,
+                    transport: transport,
+                    bluetooth: bluetooth
+                )
+            }
         }
     }
 
@@ -208,9 +229,102 @@ struct ContentView: View {
                 .padding(12)
                 .background(.black.opacity(0.22), in: RoundedRectangle(cornerRadius: 12))
             }
+
+            clubSelector
+
+            Button {
+                showRadarCalibration = true
+            } label: {
+                Label("Calibrate TI Radar", systemImage: "level.fill")
+                    .font(.callout.weight(.bold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+            }
+            .buttonStyle(.bordered)
+            .tint(.green)
+            .accessibilityIdentifier("dashboard.calibrateRadar")
         }
         .padding(16)
         .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 18))
+    }
+
+    private var selectedClub: GolfClub {
+        GolfClub(rawValue: storedClub) ?? .driver
+    }
+
+    private var clubSelector: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("CLUB FOR NEXT SHOT")
+                .font(.caption.weight(.bold))
+                .tracking(1.4)
+                .foregroundStyle(.secondary)
+
+            Menu {
+                ForEach(GolfClub.allCases) { club in
+                    Button {
+                        changeClub(to: club)
+                    } label: {
+                        if club == selectedClub {
+                            Label(club.displayName, systemImage: "checkmark")
+                        } else {
+                            Text(club.displayName)
+                        }
+                    }
+                }
+            } label: {
+                HStack {
+                    Image(systemName: "figure.golf")
+                    Text(selectedClub.displayName)
+                        .fontWeight(.semibold)
+                    Spacer()
+                    if isChangingClub {
+                        ProgressView().tint(.green)
+                    } else {
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.caption)
+                    }
+                }
+                .padding(12)
+                .background(.black.opacity(0.22), in: RoundedRectangle(cornerRadius: 12))
+            }
+            .buttonStyle(.plain)
+            .disabled(isChangingClub || state != .connected)
+            .accessibilityIdentifier("dashboard.clubSelector")
+
+            if let clubError {
+                Label(clubError, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+
+    private func changeClub(to club: GolfClub) {
+        isChangingClub = true
+        clubError = nil
+        Task {
+            do {
+                let response: ClubSelectionResponse
+                switch transport {
+                case .bluetooth:
+                    response = try await bluetooth.setClub(club)
+                case .wifi:
+                    response = try await clubClient.submit(host: host, club: club)
+                }
+                storedClub = response.club.rawValue
+            } catch {
+                clubError = error.localizedDescription
+            }
+            isChangingClub = false
+        }
+    }
+
+    private func synchronizeStoredClubIfReady() {
+        guard state == .connected, !isChangingClub else { return }
+        if transport == .bluetooth, !bluetooth.supportsPhoneControls {
+            return
+        }
+        changeClub(to: selectedClub)
     }
 
     private var emptyState: some View {

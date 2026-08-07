@@ -3,11 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import threading
-from typing import Mapping
+from collections.abc import Callable
+from typing import Any, Mapping
 
-from .protocol import SERVICE_UUID, SHOT_CHARACTERISTIC_UUID, encode_shot_event, fragment_payload
+from .protocol import (
+    CONTROL_CHARACTERISTIC_UUID,
+    SCHEMA_VERSION,
+    SERVICE_UUID,
+    SHOT_CHARACTERISTIC_UUID,
+    FragmentReassembler,
+    encode_shot_event,
+    fragment_payload,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -21,12 +31,14 @@ class BleShotPublisher:
         name: str = "OpenFlight",
         queue_size: int = 8,
         fragment_interval_s: float = 0.01,
+        command_handler: Callable[[str, Mapping], tuple[dict, int]] | None = None,
     ):
         if queue_size < 1:
             raise ValueError("BLE queue size must be at least one")
         self.name = name
         self.queue_size = queue_size
         self.fragment_interval_s = fragment_interval_s
+        self.command_handler = command_handler
 
         self._state_lock = threading.Lock()
         self._thread: threading.Thread | None = None
@@ -38,6 +50,8 @@ class BleShotPublisher:
         self._latest_payload: bytes | None = None
         self._subscribed = False
         self._sequence = 0
+        self._control_sequence = 0
+        self._control_reassembler = FragmentReassembler()
 
     @property
     def subscribed(self) -> bool:
@@ -129,6 +143,14 @@ class BleShotPublisher:
             bytearray(),
             GATTAttributePermissions.readable,
         )
+        await server.add_new_characteristic(
+            SERVICE_UUID,
+            CONTROL_CHARACTERISTIC_UUID,
+            GATTCharacteristicProperties.write | GATTCharacteristicProperties.notify,
+            bytearray(),
+            GATTAttributePermissions.readable | GATTAttributePermissions.writable,
+        )
+        server.write_request_func = self._on_write_request
         self._install_bluez_subscription_hooks(server)
 
         with self._state_lock:
@@ -241,4 +263,108 @@ class BleShotPublisher:
             characteristic.value = bytearray(frame)
             if not server.update_value(SERVICE_UUID, SHOT_CHARACTERISTIC_UUID):
                 raise RuntimeError("BLE notification update failed")
+            await asyncio.sleep(self.fragment_interval_s)
+
+    def _on_write_request(self, characteristic, value, **_kwargs) -> None:
+        """Receive one framed phone control command from the writable GATT value."""
+        if str(getattr(characteristic, "uuid", "")).lower() != CONTROL_CHARACTERISTIC_UUID.lower():
+            return
+        characteristic.value = bytearray(value)
+        try:
+            payload = self._control_reassembler.append(bytes(value))
+        except ValueError:
+            logger.warning("[BLE] Rejected malformed control frame", exc_info=True)
+            self._control_reassembler.reset()
+            return
+        if payload is None:
+            return
+
+        with self._state_lock:
+            loop = self._loop
+        if loop is None:
+            return
+        asyncio.run_coroutine_threadsafe(self._process_control_payload(payload), loop)
+
+    async def _process_control_payload(self, payload: bytes) -> None:
+        request_id = "unknown"
+        try:
+            command = json.loads(payload)
+            if not isinstance(command, dict):
+                raise ValueError("Control command must be a JSON object")
+            request_id = command.get("request_id")
+            command_type = command.get("type")
+            command_payload = command.get("payload")
+            if command.get("schema_version") != SCHEMA_VERSION:
+                raise ValueError("Unsupported control schema version")
+            if not isinstance(request_id, str) or not request_id:
+                raise ValueError("Control command requires a request_id")
+            if not isinstance(command_type, str) or not command_type:
+                raise ValueError("Control command requires a type")
+            if not isinstance(command_payload, dict):
+                raise ValueError("Control command payload must be an object")
+            if self.command_handler is None:
+                raise ValueError("Phone controls are not configured on this OpenFlight server")
+
+            result, status = await asyncio.to_thread(
+                self.command_handler,
+                command_type,
+                command_payload,
+            )
+            if status < 200 or status >= 300:
+                error = result.get("error", f"Control command failed with status {status}")
+                response = self._control_response(request_id, error=str(error))
+            else:
+                response = self._control_response(request_id, result=result)
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
+            response = self._control_response(str(request_id or "unknown"), error=str(error))
+        except Exception:  # pylint: disable=broad-exception-caught
+            logger.exception("[BLE] Phone control command failed")
+            response = self._control_response(
+                str(request_id or "unknown"),
+                error="OpenFlight could not apply the phone command",
+            )
+
+        encoded = json.dumps(
+            response,
+            allow_nan=False,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        await self._send_control_response(encoded)
+
+    @staticmethod
+    def _control_response(
+        request_id: str,
+        *,
+        result: Mapping[str, Any] | None = None,
+        error: str | None = None,
+    ) -> dict:
+        response = {
+            "schema_version": SCHEMA_VERSION,
+            "request_id": request_id,
+            "ok": error is None,
+        }
+        if error is None:
+            response["result"] = dict(result or {})
+        else:
+            response["error"] = error
+        return response
+
+    async def _send_control_response(self, payload: bytes) -> None:
+        with self._state_lock:
+            server = self._server
+            subscribed = self._subscribed
+            sequence = self._control_sequence
+            self._control_sequence = (self._control_sequence + 1) & 0xFFFF
+        if server is None or not subscribed:
+            return
+
+        characteristic = server.get_characteristic(CONTROL_CHARACTERISTIC_UUID)
+        if characteristic is None:
+            raise RuntimeError("BLE control characteristic is unavailable")
+        for frame in fragment_payload(payload, sequence=sequence):
+            characteristic.value = bytearray(frame)
+            if not server.update_value(SERVICE_UUID, CONTROL_CHARACTERISTIC_UUID):
+                raise RuntimeError("BLE control notification update failed")
             await asyncio.sleep(self.fragment_interval_s)

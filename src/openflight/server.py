@@ -13,11 +13,12 @@ import statistics
 import sys
 import threading
 import time
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from flask import Flask, Response, send_from_directory
+from flask import Flask, Response, request, send_from_directory
 from flask_cors import CORS
 from flask_socketio import SocketIO
 
@@ -29,6 +30,12 @@ from .ops243 import (
     OPS243Radar,
     SpeedReading,
     set_show_raw_readings,
+)
+from .phone_orientation import (
+    PhoneOrientationMeasurement,
+    PhoneOrientationValidationError,
+    load_phone_orientation_calibration,
+    save_phone_orientation_calibration,
 )
 from .rolling_buffer.monitor import estimate_carry_with_spin, get_optimal_spin_for_ball_speed
 from .session_logger import get_session_logger, init_session_logger, log_session_error
@@ -126,6 +133,10 @@ experimental_kld7_raw_radc_logging: bool = False
 # TI IWR6843 L3 rolling-buffer capture + LCMF-v1 launch angle.
 iwr6843_runtime = None
 iwr6843_runtime_config: dict = {"enabled": False}
+PHONE_ORIENTATION_CALIBRATION_PATH = (
+    Path.home() / ".config" / "openflight" / "iwr6843_phone_orientation.json"
+)
+_iwr6843_calibration_lock = threading.Lock()
 
 # Optional LIS3DH enclosure orientation used to compensate TI mount tilt.
 inclinometer_service = None
@@ -962,6 +973,154 @@ def display():
     return send_from_directory(_react_app_dir(), "index.html")
 
 
+@app.route("/api/calibration/iwr6843/orientation", methods=["GET", "POST"])
+def api_iwr6843_orientation_calibration():
+    """Read or apply a gravity-referenced phone measurement to TI mount tilt."""
+    if iwr6843_runtime is None:
+        return {"error": "TI IWR6843 radar is not enabled"}, 409
+
+    if request.method == "GET":
+        return {
+            "status": "ready",
+            "configured_iwr_tilt_deg": round(math.degrees(iwr6843_runtime.calibration.tilt_rad), 4),
+            "azimuth_offset_deg": round(iwr6843_runtime.azimuth_offset_deg, 4),
+            "calibration": iwr6843_runtime_config.get("phone_orientation_calibration"),
+        }
+
+    return apply_iwr6843_orientation_calibration(request.get_json(silent=True))
+
+
+def apply_iwr6843_orientation_calibration(payload):
+    """Validate, persist, and activate one phone orientation measurement."""
+    if iwr6843_runtime is None:
+        return {"error": "TI IWR6843 radar is not enabled"}, 409
+
+    try:
+        measurement = PhoneOrientationMeasurement.from_payload(payload)
+    except PhoneOrientationValidationError as error:
+        return {"error": str(error)}, 400
+
+    enclosure_pitch_deg = None
+    if inclinometer_service is not None:
+        try:
+            selection = inclinometer_service.wait_for_stable(timeout_s=2.0)
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            logger.warning("[SERVER] Enclosure sensor failed during phone calibration: %s", error)
+            return {"error": "Could not read the enclosure sensor; try again"}, 409
+        if selection.snapshot is None:
+            return {
+                "error": (
+                    "The enclosure sensor is not stable "
+                    f"({selection.status}); keep the rig still and try again"
+                )
+            }, 409
+        enclosure_pitch_deg = float(selection.snapshot.calibrated_pitch_deg)
+
+    configured_tilt_deg = measurement.mount_tilt_deg - (enclosure_pitch_deg or 0.0)
+    if not -45.0 <= configured_tilt_deg <= 45.0:
+        return {"error": "Derived TI-to-enclosure tilt is outside the supported range"}, 400
+
+    record = {
+        "schema_version": 1,
+        "source": "ios_companion",
+        "configured_iwr_tilt_deg": configured_tilt_deg,
+        "enclosure_pitch_deg": enclosure_pitch_deg,
+        "azimuth_offset_deg": iwr6843_runtime.azimuth_offset_deg,
+        "measurement": measurement.to_dict(),
+        "applied_at": datetime.now().astimezone().isoformat(),
+    }
+
+    try:
+        with _iwr6843_calibration_lock:
+            save_phone_orientation_calibration(record, PHONE_ORIENTATION_CALIBRATION_PATH)
+            calibration_meta = dict(iwr6843_runtime.calibration.meta)
+            calibration_meta["phone_orientation_calibration"] = record
+            iwr6843_runtime.calibration = replace(
+                iwr6843_runtime.calibration,
+                tilt_rad=math.radians(configured_tilt_deg),
+                meta=calibration_meta,
+            )
+            iwr6843_runtime_config.update(
+                {
+                    "tilt_deg": configured_tilt_deg,
+                    "tilt_source": "ios_companion",
+                    "phone_orientation_calibration": record,
+                }
+            )
+    except OSError as error:
+        logger.warning("[SERVER] Failed to persist phone orientation: %s", error, exc_info=True)
+        return {"error": "OpenFlight could not save the calibration"}, 500
+
+    session_logger = get_session_logger()
+    if session_logger:
+        session_logger.log_config_change(
+            {"iwr6843": dict(iwr6843_runtime_config)},
+            source="ios_companion",
+        )
+    response = {
+        "status": "applied",
+        "persistent": True,
+        "measured_mount_tilt_deg": measurement.mount_tilt_deg,
+        "enclosure_pitch_deg": enclosure_pitch_deg,
+        "configured_iwr_tilt_deg": configured_tilt_deg,
+        "roll_deg": measurement.roll_deg,
+        "azimuth_offset_deg": iwr6843_runtime.azimuth_offset_deg,
+    }
+    socketio.emit("iwr6843_orientation_calibrated", response)
+    logger.info(
+        "[SERVER] Applied iOS phone calibration: measured tilt %.3fdeg, "
+        "enclosure pitch %s, configured TI tilt %.3fdeg",
+        measurement.mount_tilt_deg,
+        f"{enclosure_pitch_deg:.3f}deg" if enclosure_pitch_deg is not None else "not enabled",
+        configured_tilt_deg,
+    )
+    return response, 200
+
+
+def apply_club_selection(payload):
+    """Set the club used to tag and process future shots."""
+    if not isinstance(payload, dict):
+        return {"error": "Club selection must be a JSON object"}, 400
+    club_name = payload.get("club")
+    try:
+        club = ClubType(club_name)
+    except (TypeError, ValueError):
+        valid = ", ".join(item.value for item in ClubType if item is not ClubType.UNKNOWN)
+        return {"error": f"Unknown club; choose one of: {valid}"}, 400
+    if club is ClubType.UNKNOWN:
+        return {"error": "Unknown is not a selectable club"}, 400
+    if monitor is None:
+        return {"error": "Launch monitor is not ready"}, 409
+
+    try:
+        monitor.set_club(club)
+    except Exception:  # pylint: disable=broad-exception-caught
+        logger.exception("[SERVER] Failed to set club to %s", club.value)
+        return {"error": "OpenFlight could not change the club"}, 500
+    response = {"status": "applied", "club": club.value}
+    socketio.emit("club_changed", {"club": club.value})
+    logger.info("[SERVER] Club changed to %s", club.value)
+    return response, 200
+
+
+def dispatch_phone_control_command(command_type, payload):
+    """Route a versioned BLE phone command to the shared server operation."""
+    handlers = {
+        "iwr6843_orientation_calibration": apply_iwr6843_orientation_calibration,
+        "set_club": apply_club_selection,
+    }
+    handler = handlers.get(command_type)
+    if handler is None:
+        return {"error": f"Unsupported phone command: {command_type}"}, 400
+    return handler(payload)
+
+
+@app.route("/api/club", methods=["POST"])
+def api_club_selection():
+    """Set the active club over Wi-Fi."""
+    return apply_club_selection(request.get_json(silent=True))
+
+
 @app.route("/<path:path>")
 def static_files(path):
     """Serve static files."""
@@ -1047,6 +1206,24 @@ def init_camera(
         return False
 
 
+def _resolve_iwr_mount_tilt(
+    calibration_tilt_deg: float,
+    *,
+    explicit_tilt_deg: float | None,
+) -> tuple[float, str]:
+    """Resolve TI tilt with explicit CLI values taking highest precedence."""
+    if explicit_tilt_deg is not None:
+        return float(explicit_tilt_deg), "command_line"
+    try:
+        saved = load_phone_orientation_calibration(PHONE_ORIENTATION_CALIBRATION_PATH)
+    except (OSError, json.JSONDecodeError, PhoneOrientationValidationError) as error:
+        logger.warning("[SERVER] Ignoring invalid saved phone calibration: %s", error)
+        return float(calibration_tilt_deg), "calibration_file"
+    if saved is not None:
+        return float(saved["configured_iwr_tilt_deg"]), "ios_companion"
+    return float(calibration_tilt_deg), "calibration_file"
+
+
 def init_iwr6843(
     *,
     port: str | None,
@@ -1082,8 +1259,11 @@ def init_iwr6843(
         calibration = Calibration.load(calibration_path)
         calibration.tee_range_m = tee_range_m
         calibration.tee_ball_height_m = ball_height_m
-        if tilt_deg is not None:
-            calibration.tilt_rad = math.radians(tilt_deg)
+        resolved_tilt_deg, tilt_source = _resolve_iwr_mount_tilt(
+            math.degrees(calibration.tilt_rad),
+            explicit_tilt_deg=tilt_deg,
+        )
+        calibration.tilt_rad = math.radians(resolved_tilt_deg)
         if radar_height_m is not None:
             calibration.meta["radar_height_m"] = radar_height_m
 
@@ -1116,6 +1296,7 @@ def init_iwr6843(
             "net_range_m": net_range_m,
             "tx_order": resolved_order,
             "tilt_deg": math.degrees(calibration.tilt_rad),
+            "tilt_source": tilt_source,
             "radar_height_m": calibration.radar_height_m,
             "ball_height_m": calibration.tee_ball_height_m,
             "azimuth_offset_deg": azimuth_offset_deg,
@@ -1712,14 +1893,7 @@ def handle_get_trigger_status():
 @socketio.on("set_club")
 def handle_set_club(data):
     """Handle club selection change."""
-    club_name = data.get("club", "driver")
-    try:
-        club = ClubType(club_name)
-        if monitor:
-            monitor.set_club(club)
-        socketio.emit("club_changed", {"club": club.value})
-    except ValueError:
-        pass
+    apply_club_selection(data)
 
 
 @socketio.on("set_player")
@@ -4200,7 +4374,7 @@ def main():
     if args.ble:
         from .ble import BleShotPublisher  # pylint: disable=import-outside-toplevel
 
-        ble_publisher = BleShotPublisher()
+        ble_publisher = BleShotPublisher(command_handler=dispatch_phone_control_command)
         ble_publisher.start()
         print("Bluetooth LE enabled (advertising as OpenFlight)")
 

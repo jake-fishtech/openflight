@@ -1,6 +1,8 @@
 import Foundation
 
 enum BLEFrameError: LocalizedError, Equatable {
+    case emptyPayload
+    case payloadTooLarge
     case invalidSize
     case unsupportedVersion(UInt8)
     case invalidMetadata
@@ -8,6 +10,10 @@ enum BLEFrameError: LocalizedError, Equatable {
 
     var errorDescription: String? {
         switch self {
+        case .emptyPayload:
+            "A BLE message cannot be empty."
+        case .payloadTooLarge:
+            "The BLE message is too large."
         case .invalidSize:
             "Received a BLE frame with an invalid size."
         case let .unsupportedVersion(version):
@@ -16,6 +22,34 @@ enum BLEFrameError: LocalizedError, Equatable {
             "Received invalid BLE fragment metadata."
         case .inconsistentFragmentCount:
             "Fragments for one BLE message disagree about its size."
+        }
+    }
+}
+
+enum BLEFrameEncoder {
+    static let maximumFragmentCount = 255
+    static let fragmentPayloadSize = BLEFrameReassembler.maximumFrameSize
+        - BLEFrameReassembler.headerSize
+
+    static func frames(_ payload: Data, sequence: UInt16) throws -> [Data] {
+        guard !payload.isEmpty else { throw BLEFrameError.emptyPayload }
+        let fragmentCount = Int(ceil(Double(payload.count) / Double(fragmentPayloadSize)))
+        guard fragmentCount <= maximumFragmentCount else {
+            throw BLEFrameError.payloadTooLarge
+        }
+
+        return (0..<fragmentCount).map { index in
+            let start = index * fragmentPayloadSize
+            let end = min(start + fragmentPayloadSize, payload.count)
+            var frame = Data([
+                BLEFrameReassembler.frameVersion,
+                UInt8(sequence >> 8),
+                UInt8(sequence & 0xFF),
+                UInt8(index),
+                UInt8(fragmentCount)
+            ])
+            frame.append(payload[start..<end])
+            return frame
         }
     }
 }

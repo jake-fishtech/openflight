@@ -59,4 +59,18 @@ final class BLEFrameReassemblerTests: XCTestCase {
         XCTAssertThrowsError(try reassembler.append(Data([2, 0, 1, 0, 1, 65])))
         XCTAssertThrowsError(try reassembler.append(Data([1, 0, 1, 2, 1, 65])))
     }
+
+    func testProductionEncoderRoundTripsLargerControlPayload() throws {
+        let payload = Data(repeating: 0x41, count: 380)
+        let frames = try BLEFrameEncoder.frames(payload, sequence: 91)
+        var reassembler = BLEFrameReassembler()
+        var result: Data?
+
+        for frame in frames {
+            result = try reassembler.append(frame) ?? result
+        }
+
+        XCTAssertEqual(result, payload)
+        XCTAssertTrue(frames.allSatisfy { $0.count <= BLEFrameReassembler.maximumFrameSize })
+    }
 }

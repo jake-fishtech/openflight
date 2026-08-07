@@ -33,7 +33,7 @@ final class WiFiShotClient: ObservableObject {
     /// on a stock install and survives DHCP changes. Rename the Pi and this
     /// becomes `<hostname>.local`.
     static let defaultHost = "raspberrypi.local:8080"
-    static let defaultPort = 8080
+    nonisolated static let defaultPort = 8080
     static let streamPath = "/api/shots/stream"
 
     /// Three missed 15-second heartbeats before a silent connection is retried.
@@ -58,6 +58,11 @@ final class WiFiShotClient: ObservableObject {
     /// Builds the stream URL from whatever the user typed: a bare hostname, a
     /// host and port, or a full URL. Returns `nil` when it cannot be used.
     static func streamURL(host: String) -> URL? {
+        endpointURL(host: host, path: streamPath)
+    }
+
+    /// Builds an OpenFlight endpoint URL while preserving a user's scheme and port.
+    nonisolated static func endpointURL(host: String, path: String) -> URL? {
         let trimmed = host.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
@@ -75,7 +80,7 @@ final class WiFiShotClient: ObservableObject {
         if components.port == nil, scheme == "http" {
             components.port = defaultPort
         }
-        components.path = streamPath
+        components.path = path.hasPrefix("/") ? path : "/\(path)"
         components.query = nil
         components.fragment = nil
         return components.url

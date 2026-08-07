@@ -85,26 +85,81 @@ beyond that, so a forgotten `curl` cannot crowd out a phone.
    transport.
 
 Over Bluetooth the app scans only for the OpenFlight service, connects
-automatically, and subscribes to shot notifications. Over Wi-Fi it opens the
-shot stream and keeps it open. Either way, hit a shot and its metrics should
-replace the empty dashboard. The most recent shot is replayed when a phone
-connects, so a newly connected phone does not have to wait for another shot.
+automatically, and subscribes to shot and control notifications. Over Wi-Fi it
+opens the shot stream and keeps it open. Either way, hit a shot and its metrics
+should replace the empty dashboard. The most recent shot is replayed when a
+phone connects, so a newly connected phone does not have to wait for another
+shot.
+
+## Select the club from the iPhone
+
+Use **Club for next shot** on the dashboard to select any supported wood,
+hybrid, iron, or wedge. OpenFlight applies the club to subsequent shots and
+confirms the change before the app updates its saved selection. The app sends
+the change over the currently selected transport:
+
+- Bluetooth uses the framed control characteristic described below.
+- Wi-Fi sends `POST /api/club` with `{"club":"7-iron"}`.
+
+The browser UI and simulator integrations use the same server operation, so a
+phone club change affects the same launch, spin, and carry processing state.
 
 > The iOS Simulator can run the automated tests, but CoreBluetooth does not
 > provide a useful end-to-end BLE hardware test there. Use a physical iPhone
 > and Raspberry Pi for manual connection testing.
+
+## Calibrate TI radar tilt with the iPhone
+
+The dashboard's **Calibrate TI Radar** button opens a guided mount-angle tool.
+It sends the measurement over whichever transport is selected on the dashboard.
+
+1. Start OpenFlight with the IWR6843 enabled. Add `--ble` for Bluetooth, or
+   connect the phone to the Pi's network for Wi-Fi.
+2. Remove the phone case. Hold the phone upright in portrait with its back flat
+   against a straight reference surface parallel to the TI antenna face. Keep
+   the screen facing the target and avoid resting on the camera bump.
+3. Keep the radar and phone still while the app averages 120 gravity samples
+   over about two seconds.
+4. Confirm left/right roll is within 3 degrees, then tap **Apply Calibration**.
+
+While the phone is moving, the angle cards are labeled **Live sensor reading**
+and show the latest Core Motion gravity angles without the two-second averaging
+lag. Once the sample window passes the stability and roll checks, the cards turn
+green and switch to the **Stable 2-second average** that will actually be sent
+to OpenFlight.
+
+The app sends the averaged gravity vector, calculated mount tilt and roll,
+sample count, and stability statistics through the BLE control characteristic
+or `POST /api/calibration/iwr6843/orientation`. Both paths call the same server
+operation. The Pi independently recomputes the angles from gravity and rejects
+inconsistent or unstable measurements. If the optional enclosure LIS3DH is
+active, OpenFlight subtracts its current calibrated enclosure pitch so the
+saved value remains the TI antenna's angle relative to the enclosure. Otherwise,
+the measured phone tilt is used directly.
+
+The applied value takes effect immediately and is saved at
+`~/.config/openflight/iwr6843_phone_orientation.json`. It is restored on startup
+unless an explicit `--iwr6843-tilt-deg` value is supplied, which always wins.
+Session logs record the change with source `ios_companion`.
+
+This process measures pitch and verifies roll. It deliberately does not change
+`--iwr6843-azimuth-offset-deg`: an accelerometer cannot establish yaw relative
+to the target line, and phone compass readings near radar electronics are not a
+precision substitute for target-line alignment.
 
 ## Wire protocol
 
 Both transports carry the same JSON event. Only the framing differs: Wi-Fi sends
 it whole in one SSE `data:` line, while BLE splits it across notifications.
 
-Over BLE, OpenFlight advertises one service and one notify-only characteristic:
+Over BLE, OpenFlight advertises one service with a shot notification and a
+bidirectional control characteristic:
 
 | Attribute | UUID |
 |---|---|
 | Shot service | `B6F633F2-E6E3-45AE-84B4-968ECCA2D9C7` |
 | Shot notification | `2B28F67E-9011-41D2-98ED-562B47D7A5E4` |
+| Control write + notification | `7E3B5D6C-7F10-4D4A-9C39-25E2B77F4A11` |
 
 Each event is compact UTF-8 JSON with `schema_version: 1`. Optional
 measurements are present as `null` when the active hardware could not produce
@@ -134,6 +189,12 @@ shared contract fixture is
 `ios/OpenFlightTests/Fixtures/shot_v1.json`; both Python and Swift tests decode
 that file.
 
+Control writes and responses use the same framing. A command contains
+`schema_version`, a unique `request_id`, a `type`, and a JSON `payload`. The Pi
+notifies a response with the matching `request_id`, `ok`, and either `result` or
+`error`. Version one supports `set_club` and
+`iwr6843_orientation_calibration`.
+
 ## Delivery behavior
 
 - Shot processing never waits for either transport, and a failure in one cannot
@@ -147,15 +208,15 @@ that file.
 
 ## Security and scope
 
-Version one intentionally has no pairing, application authentication, or
-encryption layer, on either transport. Enable BLE only where nearby Bluetooth
-devices receiving shot metrics is acceptable, and treat the Wi-Fi stream as
-readable by anything on the same network — the same assumption the browser UI
-already makes. Both send shot results only; neither exposes raw radar captures,
-session history, settings, or control commands.
+Version one intentionally has no application authentication or encryption layer
+on either transport. Enable BLE only where nearby Bluetooth devices receiving
+shots and issuing club or calibration commands is acceptable, and treat the
+Wi-Fi API as accessible to anything on the same network — the same assumption
+the browser UI already makes. Phone-assisted calibration can update and persist
+TI mount tilt, so use either transport only in a trusted environment.
 
-If the protocol later carries personal data or allows control of the Pi, add
-authenticated pairing before extending the existing characteristic.
+Add authenticated pairing before expanding the control channel to sensitive or
+destructive operations.
 
 ## Troubleshooting
 
@@ -245,7 +306,9 @@ above: it needs no Bluetooth and delivers the identical payload.
 ## Automated tests
 
 ```bash
-uv run pytest tests/test_ble_protocol.py tests/test_ble_publisher.py tests/test_shot_stream.py -v
+uv run pytest tests/test_ble_protocol.py tests/test_ble_publisher.py \
+  tests/test_shot_stream.py tests/test_phone_orientation_calibration.py \
+  tests/test_control_commands.py -v
 
 xcodebuild test \
   -project ios/OpenFlight.xcodeproj \

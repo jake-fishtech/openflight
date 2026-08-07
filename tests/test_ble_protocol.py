@@ -6,9 +6,11 @@ from pathlib import Path
 import pytest
 
 from openflight.ble.protocol import (
+    CONTROL_CHARACTERISTIC_UUID,
     FRAGMENT_PAYLOAD_SIZE,
     FRAME_SIZE,
     MAX_MESSAGE_SIZE,
+    FragmentReassembler,
     build_shot_event,
     encode_shot_event,
     fragment_payload,
@@ -129,3 +131,41 @@ def test_invalid_frame_metadata_is_rejected():
 def test_oversized_payload_is_rejected():
     with pytest.raises(ValueError, match="maximum"):
         fragment_payload(b"x" * (MAX_MESSAGE_SIZE + 1), sequence=0)
+
+
+def test_control_characteristic_uuid_is_distinct_from_shot_notifications():
+    from openflight.ble.protocol import SHOT_CHARACTERISTIC_UUID
+
+    assert CONTROL_CHARACTERISTIC_UUID != SHOT_CHARACTERISTIC_UUID
+
+
+def test_incremental_reassembler_completes_control_payload():
+    payload = json.dumps(
+        {
+            "schema_version": 1,
+            "type": "iwr6843_orientation_calibration",
+            "request_id": "request-1",
+            "payload": {"mount_tilt_deg": 12.25},
+        }
+    ).encode()
+    reassembler = FragmentReassembler()
+
+    result = None
+    for frame in fragment_payload(payload, sequence=42):
+        result = reassembler.append(frame) or result
+
+    assert result == payload
+
+
+def test_incremental_reassembler_recovers_when_a_new_sequence_arrives():
+    old_frames = fragment_payload(b"old incomplete payload", sequence=1)
+    new_payload = b"new complete payload"
+    new_frames = fragment_payload(new_payload, sequence=2)
+    reassembler = FragmentReassembler()
+
+    assert reassembler.append(old_frames[0]) is None
+    result = None
+    for frame in new_frames:
+        result = reassembler.append(frame) or result
+
+    assert result == new_payload

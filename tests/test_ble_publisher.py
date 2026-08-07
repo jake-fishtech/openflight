@@ -4,7 +4,12 @@ import asyncio
 import json
 import logging
 
-from openflight.ble.protocol import SHOT_CHARACTERISTIC_UUID, reassemble_fragments
+from openflight.ble.protocol import (
+    CONTROL_CHARACTERISTIC_UUID,
+    SHOT_CHARACTERISTIC_UUID,
+    fragment_payload,
+    reassemble_fragments,
+)
 from openflight.ble.publisher import BleShotPublisher
 
 
@@ -53,6 +58,27 @@ class _BlueZApplication:
 class _BlueZServer:
     def __init__(self):
         self.app = _BlueZApplication()
+
+
+class _ControlCharacteristic:
+    uuid = CONTROL_CHARACTERISTIC_UUID
+    value = bytearray()
+
+
+class _ControlServer:
+    def __init__(self):
+        self.characteristic = _ControlCharacteristic()
+        self.notifications = []
+
+    def get_characteristic(self, uuid):
+        assert uuid == CONTROL_CHARACTERISTIC_UUID
+        return self.characteristic
+
+    def update_value(self, service_uuid, characteristic_uuid):
+        self.notifications.append(
+            (service_uuid, characteristic_uuid, bytes(self.characteristic.value))
+        )
+        return True
 
 
 def test_disconnected_publish_retains_only_latest_payload():
@@ -155,3 +181,98 @@ def test_background_startup_failure_is_isolated(caplog):
 
     assert not publisher._thread.is_alive()  # pylint: disable=protected-access
     assert "shot recording will continue without BLE" in caplog.text
+
+
+def test_control_write_reassembles_command_and_notifies_response():
+    async def run():
+        received = []
+
+        def handler(command_type, payload):
+            received.append((command_type, payload))
+            return {
+                "status": "applied",
+                "persistent": True,
+                "configured_iwr_tilt_deg": 12.25,
+            }, 200
+
+        publisher = BleShotPublisher(command_handler=handler, fragment_interval_s=0)
+        publisher._loop = asyncio.get_running_loop()  # pylint: disable=protected-access
+        publisher._server = _ControlServer()  # pylint: disable=protected-access
+        publisher._subscribed = True  # pylint: disable=protected-access
+        command = {
+            "schema_version": 1,
+            "type": "iwr6843_orientation_calibration",
+            "request_id": "request-1",
+            "payload": {"mount_tilt_deg": 12.25},
+        }
+
+        for frame in fragment_payload(json.dumps(command).encode(), sequence=7):
+            publisher._on_write_request(  # pylint: disable=protected-access
+                publisher._server.characteristic,  # pylint: disable=protected-access
+                bytearray(frame),
+            )
+
+        for _ in range(100):
+            if publisher._server.notifications:  # pylint: disable=protected-access
+                break
+            await asyncio.sleep(0.01)
+
+        assert received == [("iwr6843_orientation_calibration", {"mount_tilt_deg": 12.25})]
+        updates = publisher._server.notifications  # pylint: disable=protected-access
+        assert {item[1] for item in updates} == {CONTROL_CHARACTERISTIC_UUID}
+        response = json.loads(reassemble_fragments(item[2] for item in updates))
+        assert response == {
+            "schema_version": 1,
+            "request_id": "request-1",
+            "ok": True,
+            "result": {
+                "status": "applied",
+                "persistent": True,
+                "configured_iwr_tilt_deg": 12.25,
+            },
+        }
+
+    asyncio.run(run())
+
+
+def test_control_write_dispatches_club_selection_command():
+    async def run():
+        received = []
+
+        def handler(command_type, payload):
+            received.append((command_type, payload))
+            return {"status": "applied", "club": payload["club"]}, 200
+
+        publisher = BleShotPublisher(command_handler=handler, fragment_interval_s=0)
+        publisher._loop = asyncio.get_running_loop()  # pylint: disable=protected-access
+        publisher._server = _ControlServer()  # pylint: disable=protected-access
+        publisher._subscribed = True  # pylint: disable=protected-access
+        command = {
+            "schema_version": 1,
+            "type": "set_club",
+            "request_id": "club-request-1",
+            "payload": {"club": "7-iron"},
+        }
+
+        for frame in fragment_payload(json.dumps(command).encode(), sequence=8):
+            publisher._on_write_request(  # pylint: disable=protected-access
+                publisher._server.characteristic,  # pylint: disable=protected-access
+                bytearray(frame),
+            )
+
+        for _ in range(100):
+            if publisher._server.notifications:  # pylint: disable=protected-access
+                break
+            await asyncio.sleep(0.01)
+
+        assert received == [("set_club", {"club": "7-iron"})]
+        updates = publisher._server.notifications  # pylint: disable=protected-access
+        response = json.loads(reassemble_fragments(item[2] for item in updates))
+        assert response == {
+            "schema_version": 1,
+            "request_id": "club-request-1",
+            "ok": True,
+            "result": {"status": "applied", "club": "7-iron"},
+        }
+
+    asyncio.run(run())

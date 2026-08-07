@@ -10,6 +10,7 @@ from typing import Iterable, Mapping
 
 SERVICE_UUID = "B6F633F2-E6E3-45AE-84B4-968ECCA2D9C7"
 SHOT_CHARACTERISTIC_UUID = "2B28F67E-9011-41D2-98ED-562B47D7A5E4"
+CONTROL_CHARACTERISTIC_UUID = "7E3B5D6C-7F10-4D4A-9C39-25E2B77F4A11"
 
 SCHEMA_VERSION = 1
 FRAME_VERSION = 1
@@ -108,3 +109,37 @@ def reassemble_fragments(frames: Iterable[bytes]) -> bytes:
     if fragment_count is None or len(fragments) != fragment_count:
         raise ValueError("BLE message is incomplete")
     return b"".join(fragments[index] for index in range(fragment_count))
+
+
+class FragmentReassembler:
+    """Incrementally reassemble one message, replacing stale partial messages."""
+
+    def __init__(self):
+        self._sequence: int | None = None
+        self._fragment_count: int | None = None
+        self._fragments: dict[int, bytes] = {}
+
+    def reset(self) -> None:
+        """Discard the current incomplete message."""
+        self._sequence = None
+        self._fragment_count = None
+        self._fragments = {}
+
+    def append(self, frame: bytes) -> bytes | None:
+        """Append one frame and return the complete payload when available."""
+        sequence, index, fragment_count, payload = parse_fragment(frame)
+        if self._sequence != sequence:
+            self.reset()
+            self._sequence = sequence
+            self._fragment_count = fragment_count
+        elif self._fragment_count != fragment_count:
+            self.reset()
+            raise ValueError("BLE frames disagree about fragment count")
+
+        self._fragments[index] = payload
+        if len(self._fragments) != fragment_count:
+            return None
+
+        message = b"".join(self._fragments[item] for item in range(fragment_count))
+        self.reset()
+        return message
