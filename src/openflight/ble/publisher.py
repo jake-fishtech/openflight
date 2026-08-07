@@ -166,7 +166,7 @@ class BleShotPublisher:
             CONTROL_CHARACTERISTIC_UUID,
             GATTCharacteristicProperties.write | GATTCharacteristicProperties.notify,
             bytearray(),
-            GATTAttributePermissions.readable | GATTAttributePermissions.writable,
+            GATTAttributePermissions.readable | GATTAttributePermissions.writeable,
         )
         server.write_request_func = self._on_write_request
         self._install_bluez_subscription_hooks(server)

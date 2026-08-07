@@ -3,6 +3,9 @@
 import asyncio
 import json
 import logging
+import sys
+import types
+from enum import IntFlag
 
 from openflight.ble.protocol import (
     CONTROL_CHARACTERISTIC_UUID,
@@ -79,6 +82,62 @@ class _ControlServer:
             (service_uuid, characteristic_uuid, bytes(self.characteristic.value))
         )
         return True
+
+
+def test_linux_runtime_uses_bless_writeable_permission(monkeypatch):
+    """Bless 0.3.0 spells the attribute permission ``writeable``."""
+
+    class Properties(IntFlag):
+        notify = 1
+        write = 2
+
+    class Permissions(IntFlag):
+        readable = 1
+        writeable = 2
+
+    class FakeBlessServer:
+        instance = None
+
+        def __init__(self, **_kwargs):
+            self.characteristics = []
+            self.app = None
+            FakeBlessServer.instance = self
+
+        async def add_new_service(self, _uuid):
+            return None
+
+        async def add_new_characteristic(
+            self, service_uuid, characteristic_uuid, properties, value, permissions
+        ):
+            self.characteristics.append(
+                (service_uuid, characteristic_uuid, properties, value, permissions)
+            )
+
+        async def start(self):
+            return None
+
+        async def stop(self):
+            return None
+
+    fake_bless = types.ModuleType("bless")
+    fake_bless.BlessServer = FakeBlessServer
+    fake_bless.GATTCharacteristicProperties = Properties
+    fake_bless.GATTAttributePermissions = Permissions
+    monkeypatch.setitem(sys.modules, "bless", fake_bless)
+
+    async def run():
+        publisher = BleShotPublisher()
+        publisher._stop_requested.set()  # pylint: disable=protected-access
+        await publisher._run()  # pylint: disable=protected-access
+
+    asyncio.run(run())
+
+    control = next(
+        item
+        for item in FakeBlessServer.instance.characteristics
+        if item[1] == CONTROL_CHARACTERISTIC_UUID
+    )
+    assert control[4] == Permissions.readable | Permissions.writeable
 
 
 def test_disconnected_publish_retains_only_latest_payload():
