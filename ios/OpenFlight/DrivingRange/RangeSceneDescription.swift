@@ -47,11 +47,17 @@ struct RangeTracerStyle: Equatable, Sendable {
     let nearWidthMeters: Float
     let farWidthMeters: Float
     let opacity: Float
+    let red: Float
+    let green: Float
+    let blue: Float
 
     static let highVisibility = RangeTracerStyle(
-        nearWidthMeters: 0.040,
-        farWidthMeters: 0.26,
-        opacity: 0.84
+        nearWidthMeters: 0.080,
+        farWidthMeters: 0.52,
+        opacity: 0.84,
+        red: 0.04,
+        green: 0.42,
+        blue: 1.0
     )
 }
 

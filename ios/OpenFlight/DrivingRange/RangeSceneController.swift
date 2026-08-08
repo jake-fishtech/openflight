@@ -127,9 +127,9 @@ final class RangeSceneController: NSObject {
         let tracerMesh = MeshResource.generateBox(size: SIMD3<Float>(1, 1, 1))
         let tracerMaterial = UnlitMaterial(
             color: UIColor(
-                red: 1,
-                green: 0.78,
-                blue: 0.04,
+                red: CGFloat(tracerStyle.red),
+                green: CGFloat(tracerStyle.green),
+                blue: CGFloat(tracerStyle.blue),
                 alpha: CGFloat(tracerStyle.opacity)
             )
         )
