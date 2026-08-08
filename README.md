@@ -124,9 +124,10 @@ Then open http://localhost:8080 or use the touchscreen.
 
 To show completed shots on an iPhone, build the small SwiftUI app in `ios/`.
 It receives shots two ways: over Bluetooth with no network at all (start the Pi
-with `--ble`), or over Wi-Fi from the server that is already running. See the
-**[iOS App Guide](docs/ios-ble.md)** for setup, protocol details, and
-troubleshooting.
+with `--ble`), or over Wi-Fi from the server that is already running. Start with
+the **[iOS setup README](ios/README.md)** for Xcode, signing, device setup, tests,
+and common fixes. See the **[iOS connection guide](docs/ios-ble.md)** for protocol
+details and deeper Pi-side troubleshooting.
 
 ### 5. Sync to the cloud (optional)
 

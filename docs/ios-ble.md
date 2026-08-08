@@ -1,5 +1,11 @@
 # iOS app connection
 
+> **BLE blocker — check the Raspberry Pi kernel first:** Raspberry Pi kernel
+> `6.18.34+rpt-rpi-2712` has a confirmed regression that rejects every BLE
+> advertisement. Run `uname -r` on the Pi. If it reports that version, use the
+> Wi-Fi transport or boot a working kernel such as 6.12.x; there is no userspace
+> workaround. See the [full diagnosis](#known-bad-raspberry-pi-kernel-61834rpt-rpi-2712).
+
 OpenFlight sends each completed shot from a Raspberry Pi to the included SwiftUI
 app over one of two local transports, chosen with the picker at the top of the
 app. Both carry the identical versioned payload described below, so the app
@@ -75,6 +81,9 @@ The server accepts up to eight simultaneous stream clients and answers `503`
 beyond that, so a forgotten `curl` cannot crowd out a phone.
 
 ## Build and run the iOS app
+
+For complete Xcode, signing, physical-device, simulator, testing, and
+troubleshooting instructions, start with [`ios/README.md`](../ios/README.md).
 
 1. Open `ios/OpenFlight.xcodeproj` in Xcode.
 2. Select the `OpenFlight` target, choose your development team, and use a
@@ -313,6 +322,8 @@ uv run pytest tests/test_ble_protocol.py tests/test_ble_publisher.py \
 xcodebuild test \
   -project ios/OpenFlight.xcodeproj \
   -scheme OpenFlight \
-  -destination "platform=iOS Simulator,name=iPhone 16" \
+  -destination "platform=iOS Simulator,id=PASTE-SIMULATOR-UUID-HERE" \
   CODE_SIGNING_ALLOWED=NO
 ```
+
+List valid simulator UUIDs first with `xcrun simctl list devices available`.
